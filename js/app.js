@@ -89,6 +89,7 @@ const P = {
   target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   next: '<path d="M4 12h13M13 6l6 6-6 6"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
 };
 
 const ic = (name, size = 20) =>
@@ -109,6 +110,7 @@ const S = {
   saving: false,
   syncing: false,
   offline: false,
+  push: 'unknown', // reminders on this device: unknown | on | off | denied | unsupported
   seq: 0,
   undo: null,
   charts: [],
@@ -120,7 +122,7 @@ function defaultData() {
   const c = (id, name, icon, color, type) => ({ id, name, icon, color, type, budget: 0 });
   return {
     version: 1,
-    settings: { currency: 'MT', decimals: 2, startBalance: 0, theme: 'auto', iconStyle: 'initials' },
+    settings: { currency: 'MT', decimals: 2, startBalance: 0, theme: 'auto', iconStyle: 'initials', remindHour: 8, remindDayBefore: false },
     categories: [
       c('salary', 'Salary', '💼', '#10b981', 'income'),
       c('business', 'Business', '🏪', '#0ea5e9', 'income'),
@@ -336,6 +338,109 @@ async function refresh() {
     if (e.status === 401) showAuth('login'); else S.offline = true;
   }
   updateSync();
+}
+
+/* ---------- payment reminders (Web Push, sent by cron-reminders.php) ---------- */
+
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window && window.isSecureContext;
+
+/** Work out whether this device is subscribed; re-render Settings when it changes. */
+async function checkPush() {
+  let state = 'unsupported';
+  if (pushSupported()) {
+    if (Notification.permission === 'denied') state = 'denied';
+    else {
+      const reg = await navigator.serviceWorker.getRegistration();
+      state = reg && await reg.pushManager.getSubscription() ? 'on' : 'off';
+    }
+  }
+  if (state !== S.push) {
+    S.push = state;
+    if (S.view === 'settings' && $('#sheet').hidden) render();
+  }
+}
+
+const b64urlBytes = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+async function pushOn() {
+  try {
+    // Must be asked straight from the tap (iOS requires it).
+    if (await Notification.requestPermission() !== 'granted') {
+      S.push = 'denied';
+      render();
+      return toast('Notifications are blocked for this app');
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await api('push-key');
+    const serverKey = b64urlBytes(key);
+    let sub = await reg.pushManager.getSubscription();
+    const sameKey = sub?.options.applicationServerKey &&
+      new Uint8Array(sub.options.applicationServerKey).every((b, i) => b === serverKey[i]);
+    if (sub && !sameKey) { await sub.unsubscribe(); sub = null; }
+    sub = sub || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: serverKey });
+    await api('push-subscribe', { subscription: sub.toJSON(), tz: Intl.DateTimeFormat().resolvedOptions().timeZone });
+    S.push = 'on';
+    render();
+    toast('Reminders are on for this device');
+  } catch (e) {
+    toast(e.status === 401 ? 'Please log in again' : `Could not turn on reminders${e.message ? ` — ${e.message}` : ''}`);
+  }
+}
+
+async function pushOff() {
+  try {
+    const reg = await navigator.serviceWorker.getRegistration();
+    const sub = await reg?.pushManager.getSubscription();
+    if (sub) {
+      await api('push-unsubscribe', { endpoint: sub.endpoint }).catch(() => {});
+      await sub.unsubscribe();
+    }
+    S.push = 'off';
+    render();
+    toast('Reminders are off for this device');
+  } catch (e) {
+    toast('Could not turn off reminders');
+  }
+}
+
+async function pushTest() {
+  try {
+    const { sent } = await api('push-test', {});
+    toast(sent ? `Test sent to ${sent} device${sent > 1 ? 's' : ''}` : 'No device received it — turn reminders on again');
+  } catch (e) {
+    toast(e.message || 'Could not send a test');
+  }
+}
+
+function remindersCard() {
+  const st = S.data.settings;
+  const hours = Array.from({ length: 17 }, (_, i) => i + 5)
+    .map(h => `<option value="${h}" ${Number(st.remindHour ?? 8) === h ? 'selected' : ''}>${pad(h)}:00</option>`).join('');
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const status = {
+    unknown: '<span class="hint">Checking…</span>',
+    on: `<span class="tag green">On for this device</span>`,
+    off: '<span class="tag">Off on this device</span>',
+    denied: '<span class="tag red">Blocked</span>',
+    unsupported: '<span class="tag">Not available here</span>',
+  }[S.push];
+  let action = '';
+  if (S.push === 'off') action = `<button class="btn btn-primary" data-action="push-on">${ic('bell', 18)} Turn on reminders</button>`;
+  if (S.push === 'on') action = `<button class="btn" data-action="push-test">${ic('bell', 18)} Send a test</button><button class="btn btn-ghost" data-action="push-off">Turn off</button>`;
+  let note = 'A notification on the days you planned to pay something, with what and how much.';
+  if (S.push === 'denied') note = 'Notifications are blocked for this app. Allow them in your phone or browser settings, then come back here.';
+  if (S.push === 'unsupported') note = isIOS
+    ? 'On iPhone, first add BB Cash to your Home Screen (Share → Add to Home Screen) and open it from there. Needs iOS 16.4 or newer.'
+    : 'This browser can’t receive notifications. Open BB Cash over https in Chrome, Edge, Firefox or Safari.';
+  return `
+      <section class="card">
+        <header class="card-head"><h2>Payment reminders</h2>${status}</header>
+        <p class="hint" style="margin-bottom:12px">${note}</p>
+        ${action ? `<div class="btn-row" style="margin-bottom:8px">${action}</div>` : ''}
+        <div class="set-row"><span class="lbl">Remind me at<small>Same time for all your devices</small></span><select data-setting="remindHour">${hours}</select></div>
+        <div class="set-row"><span class="lbl">Also the day before<small>A heads-up for tomorrow’s payments</small></span>
+          <select data-setting="remindDayBefore"><option value="" ${st.remindDayBefore ? '' : 'selected'}>No</option><option value="1" ${st.remindDayBefore ? 'selected' : ''}>Yes</option></select></div>
+      </section>`;
 }
 
 /** Force a full sync: push pending edits, then always reload the server copy. */
@@ -1072,6 +1177,8 @@ function viewSettings() {
         <ul class="list">${catRows('income')}</ul>
       </section>
 
+      ${remindersCard()}
+
       ${installCard()}
 
       <section class="card">
@@ -1505,6 +1612,9 @@ const ACTIONS = {
   },
   'install-help': installHelp,
   'sync-now': syncNow,
+  'push-on': pushOn,
+  'push-off': pushOff,
+  'push-test': pushTest,
   'force-update': forceUpdate,
   'month-amount': el => {
     const form = el.closest('form');
@@ -1902,6 +2012,7 @@ function startApp() {
   $('#app').hidden = false;
   if (!$('#app').children.length) renderShell();
   render();
+  checkPush();
   // Home-screen shortcut "New entry" opens ./?add=1
   const params = new URLSearchParams(location.search);
   if (params.has('add')) {
@@ -1979,7 +2090,8 @@ document.addEventListener('change', e => {
     const key = el.dataset.setting;
     let val = el.value;
     if (key === 'startBalance') val = el.value.trim().startsWith('-') ? -parseAmount(el.value) || 0 : parseAmount(el.value) || 0;
-    if (key === 'decimals') val = Number(val);
+    if (key === 'decimals' || key === 'remindHour') val = Number(val);
+    if (key === 'remindDayBefore') val = val === '1';
     if (key === 'currency') val = val.trim() || 'MT';
     mutate(d => { d.settings[key] = val; });
     toast('Saved');

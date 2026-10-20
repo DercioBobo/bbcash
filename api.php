@@ -10,7 +10,12 @@
  *   GET  ?action=load      -> { rev, data }
  *   POST ?action=save      { rev, data }           409 if rev is stale
  *   POST ?action=password  { current, next }
+ *   GET  ?action=push-key           -> { key }     VAPID public key for reminders
+ *   POST ?action=push-subscribe     { subscription, tz }
+ *   POST ?action=push-unsubscribe   { endpoint }
+ *   POST ?action=push-test          -> { sent }
  *
+ * Reminders are sent by cron-reminders.php (run it hourly from cPanel → Cron Jobs).
  * Works on PHP 7.4+ (typical cPanel hosting).
  */
 
@@ -30,10 +35,17 @@ const LOCKOUT_SECONDS = 300;
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const COOKIE = 'bbcash_token';
 
+require_once __DIR__ . '/push.php';
+
 header('X-Content-Type-Options: nosniff');
 header('Cache-Control: no-store');
 
 ensureDataDir();
+
+// cron-reminders.php includes this file only for its helpers.
+if (defined('BBCASH_LIB')) {
+    return;
+}
 
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
@@ -163,6 +175,53 @@ try {
                 return [200, ['ok' => true]];
             });
             respond($result[0], $result[1]);
+
+        case 'push-key':
+            requireAuth();
+            respond(200, ['key' => withLock('pushStore')['vapid']['public']]);
+
+        case 'push-subscribe':
+            requirePost($method);
+            requireAuth();
+            $body = body();
+            $sub = $body['subscription'] ?? null;
+            if (!is_array($sub) || !preg_match('#^https://#', (string)($sub['endpoint'] ?? '')) || empty($sub['keys']['p256dh']) || empty($sub['keys']['auth'])) {
+                respond(422, ['error' => 'Invalid subscription.']);
+            }
+            $tz = (string)($body['tz'] ?? '');
+            withLock(function () use ($sub, $tz) {
+                $store = pushStore();
+                $store['subs'] = array_values(array_filter($store['subs'], function ($s) use ($sub) {
+                    return $s['endpoint'] !== $sub['endpoint'];
+                }));
+                $store['subs'][] = ['endpoint' => $sub['endpoint'], 'keys' => ['p256dh' => $sub['keys']['p256dh'], 'auth' => $sub['keys']['auth']], 'added' => date('c')];
+                $store['subs'] = array_slice($store['subs'], -10);
+                if (in_array($tz, timezone_identifiers_list(), true)) {
+                    $store['tz'] = $tz;
+                }
+                $store['subject'] = 'https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost');
+                writeJson(PUSH_FILE, $store);
+            });
+            respond(200, ['ok' => true]);
+
+        case 'push-unsubscribe':
+            requirePost($method);
+            requireAuth();
+            $endpoint = (string)(body()['endpoint'] ?? '');
+            withLock(function () use ($endpoint) {
+                $store = pushStore();
+                $store['subs'] = array_values(array_filter($store['subs'], function ($s) use ($endpoint) {
+                    return $s['endpoint'] !== $endpoint;
+                }));
+                writeJson(PUSH_FILE, $store);
+            });
+            respond(200, ['ok' => true]);
+
+        case 'push-test':
+            requirePost($method);
+            requireAuth();
+            $sent = pushToAll(['title' => 'BB Cash reminders are on', 'body' => 'You will get a reminder on the days you planned to pay something.', 'url' => './']);
+            respond(200, ['sent' => $sent]);
 
         default:
             respond(404, ['error' => 'Unknown action.']);

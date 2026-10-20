@@ -12,6 +12,9 @@ Options -Indexes
 
   # Never serve your data, your personal documents or editor files directly
   RewriteRule ^(data|docs|\.idea)(/|$) - [F,L]
+
+  # Server-only scripts (the reminder cron and its push helper)
+  RewriteRule ^(cron-reminders|push)\.php$ - [F,L]
 </IfModule>
 
 <IfModule mod_headers.c>
