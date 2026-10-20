@@ -583,7 +583,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .check:hover { border-color: var(--income); color: var(--income); }
 .check.income:hover { border-color: var(--income); }
 
-.pend.overdue .check { border-color: color-mix(in srgb, var(--expense) 55%, transparent); }
 
 .pend-total {
   display: flex; justify-content: space-between; gap: 12px;
@@ -975,8 +974,8 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 .ov-list li { display: flex; align-items: center; gap: 10px; padding: 4px 0; font-size: 14px; }
 .ov-list li span { flex: 1; font-weight: 600; }
 .ov-list li .icon-btn { width: 30px; height: 30px; }
-.ov-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
-.ov-add input { padding: 9px 10px; }
+.ov-add { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, .7fr) auto; gap: 8px; align-items: center; }
+.ov-add input { padding: 9px 10px; min-width: 0; }
 
 .cat-new { border: 0; background: none; padding: 0; font: inherit; }
 .cat-new span { border-style: dashed; color: var(--accent); }
@@ -1046,7 +1045,9 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   overscroll-behavior: contain;
   background: var(--surface);
   border-radius: 26px 26px 0 0;
-  padding: 10px 20px calc(20px + env(safe-area-inset-bottom));
+  --pad-x: 20px;
+  --pad-b: calc(20px + env(safe-area-inset-bottom));
+  padding: 10px var(--pad-x) var(--pad-b);
   box-shadow: var(--shadow-lg);
   transform: translateY(100%);
   transition: transform .26s cubic-bezier(.2, .8, .2, 1);
@@ -1070,13 +1071,24 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 .sheet-head h2 { font-size: 19px; font-weight: 800; letter-spacing: -.02em; }
 
 .sheet-actions { display: flex; gap: 10px; margin-top: 4px; }
+
+/* Keep Add / Save visible at the bottom of the sheet while the form scrolls */
+.sheet-panel .sheet-actions {
+  position: sticky; bottom: 0; z-index: 2;
+  margin: 4px calc(-1 * var(--pad-x)) calc(-1 * var(--pad-b));
+  padding: 12px var(--pad-x) var(--pad-b);
+  background: var(--surface);
+  box-shadow: 0 -1px 0 var(--border);
+}
 .sheet-actions .btn-primary { flex: 1; }
 
 @media (min-width: 640px) {
   .sheet { align-items: center; padding: 24px; }
   .sheet-panel {
     border-radius: 26px;
-    padding: 20px 24px 24px;
+    --pad-x: 24px;
+    --pad-b: 24px;
+    padding: 20px var(--pad-x) var(--pad-b);
     transform: translateY(14px) scale(.98);
     opacity: 0;
     transition: transform .2s, opacity .2s;

@@ -155,7 +155,7 @@ function normalize(d) {
     version: 1,
     settings: { ...base.settings, ...(d.settings || {}) },
     categories: Array.isArray(d.categories) ? d.categories : base.categories,
-    recurring: (Array.isArray(d.recurring) ? d.recurring : []).map(r => ({ skips: [], end: null, overrides: {}, ...r })),
+    recurring: (Array.isArray(d.recurring) ? d.recurring : []).map(r => ({ skips: [], end: null, overrides: {}, days: {}, ...r })),
     transactions: Array.isArray(d.transactions) ? d.transactions : [],
     goals: Array.isArray(d.goals) ? d.goals : [],
     debts: Array.isArray(d.debts) ? d.debts : [],
@@ -199,10 +199,14 @@ function totalsByMonth() {
 }
 
 const recurringActive = (r, ym) => r.start <= ym && (!r.end || r.end >= ym) && !(r.skips || []).includes(ym);
-const dueDate = (r, ym) => `${ym}-${pad(Math.min(r.day, daysIn(ym)))}`;
-// A fixed payment has a default amount, optionally replaced for single months (r.overrides['YYYY-MM']).
+// A fixed payment has a default amount and planned day; single months can change either
+// (r.overrides['YYYY-MM'] = amount, r.days['YYYY-MM'] = day).
 const hasOverride = (r, ym) => r.overrides?.[ym] != null;
+const hasDayChange = (r, ym) => r.days?.[ym] != null;
+const monthChanged = (r, ym) => hasOverride(r, ym) || hasDayChange(r, ym);
 const amountFor = (r, ym) => (hasOverride(r, ym) ? r.overrides[ym] : r.amount);
+const dayFor = (r, ym) => (hasDayChange(r, ym) ? r.days[ym] : r.day);
+const plannedDate = (r, ym) => `${ym}-${pad(Math.min(dayFor(r, ym), daysIn(ym)))}`;
 
 /** Fixed payments not yet paid this month (virtual) + unpaid one-off transactions. */
 function pendingFor(ym) {
@@ -210,7 +214,7 @@ function pendingFor(ym) {
   const items = [];
   for (const r of S.data.recurring) {
     if (recurringActive(r, ym) && !linked.has(r.id)) {
-      items.push({ virtual: true, id: 'v-' + r.id, rid: r.id, ym, type: r.type, amount: amountFor(r, ym), custom: hasOverride(r, ym), category: r.category, note: r.name, date: dueDate(r, ym) });
+      items.push({ virtual: true, id: 'v-' + r.id, rid: r.id, ym, type: r.type, amount: amountFor(r, ym), custom: monthChanged(r, ym), category: r.category, note: r.name, date: plannedDate(r, ym) });
     }
   }
   for (const t of S.data.transactions) if (!t.paid && ymOf(t.date) === ym) items.push(t);
@@ -545,15 +549,11 @@ const isFixed = p => !!(p.virtual || p.recurringId);
 function pendingRow(p) {
   const today = todayISO();
   const c = cat(p.category);
-  const late = dayDiff(today, p.date);
-  let when = `Due ${dateShort(p.date)}`;
-  if (late > 0) when = `<span class="tag red">${late === 1 ? '1 day late' : late + ' days late'}</span>`;
-  else if (late === 0) when = '<span class="tag green">Due today</span>';
-  else if (late >= -3) when = `Due in ${-late} day${late === -1 ? '' : 's'}`;
+  const when = p.date === today ? '<span class="tag green">Planned today</span>' : `Planned ${dateShort(p.date)}`;
   const move = isFixed(p) ? '' :
     `<button class="icon-btn move" data-action="move-next" data-id="${p.id}" title="Move to ${ymLabel(ymAdd(ymOf(p.date), 1))}" aria-label="Move ${esc(p.note || c.name)} to next month">${ic('next', 17)}</button>`;
   return `
-    <li class="row pend ${late > 0 ? 'overdue' : ''}">
+    <li class="row pend">
       <button class="check ${p.type}" data-action="quickpay" data-id="${p.id}" aria-label="Mark ${esc(p.note || c.name)} as ${p.type === 'income' ? 'received' : 'paid'}">${ic('check', 15)}</button>
       <button class="row-btn" data-action="open-pending" data-id="${p.id}">
         ${catIcon(c, '', p.type)}
@@ -710,7 +710,9 @@ function viewFixed() {
       else if (paidIds.has(r.id)) status = `<span class="tag green">${type === 'income' ? 'Received' : 'Paid'} this month</span>`;
       else if ((r.skips || []).includes(now)) status = '<span class="tag">Skipped this month</span>';
       else status = '<span class="tag">Pending</span>';
-      if (!ended && !paidIds.has(r.id) && hasOverride(r, now)) status += ` <span class="tag">This month ${fmtNumber(r.overrides[now])}</span>`;
+      if (!ended && !paidIds.has(r.id) && monthChanged(r, now)) {
+        status += ` <span class="tag">This month ${[hasOverride(r, now) && fmtNumber(r.overrides[now]), hasDayChange(r, now) && `day ${r.days[now]}`].filter(Boolean).join(' · ')}</span>`;
+      }
       return `
         <li class="${ended ? 'ended' : ''}"><button class="row-btn" data-action="edit-recurring" data-id="${r.id}">
           ${catIcon(c)}
@@ -1179,7 +1181,7 @@ function txForm(t) {
       ${typeSeg(t.type)}
       ${amountField(t.type, t.amount, isNew)}
       <label class="field"><span class="label">Description</span><input name="note" value="${esc(t.note || '')}" placeholder="What is it for? (optional)" maxlength="80" autocomplete="off" enterkeyhint="done"></label>
-      <label class="field"><span class="label">Date</span><input type="date" name="date" value="${esc(t.date)}" required></label>
+      <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
       <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
       <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
       ${!isNew && !t.paid && !t.recurringId
@@ -1193,20 +1195,19 @@ function txForm(t) {
 
 function payForm(p) {
   const r = S.data.recurring.find(x => x.id === p.rid);
-  const date = p.ym === ymNow() ? todayISO() : p.date;
   const verb = p.type === 'income' ? 'received' : 'paid';
   openSheet(p.note, `
     <form class="form" data-form="pay">
       <input type="hidden" name="rid" value="${esc(p.rid)}">
       <input type="hidden" name="ym" value="${esc(p.ym)}">
-      <p class="hint" style="text-align:center">${ic('repeat', 12).replace('class="ic"', 'class="ic" style="display:inline;vertical-align:-1px"')} Fixed ${p.type} · due ${dateShort(p.date)} · ${esc(cat(p.category).name)}</p>
+      <p class="hint" style="text-align:center">${ic('repeat', 12).replace('class="ic"', 'class="ic" style="display:inline;vertical-align:-1px"')} Fixed ${p.type} · ${esc(cat(p.category).name)}</p>
       ${amountField(p.type, p.amount)}
       <p class="hint" style="text-align:center;margin-top:-10px">${p.custom
-        ? `Changed for ${ymLabel(p.ym)} · default is ${money(r.amount)} · <button type="button" class="link" data-action="month-amount-reset" data-rid="${esc(p.rid)}" data-ym="${esc(p.ym)}">Reset</button>`
-        : `Default amount for every month`}</p>
-      <label class="field"><span class="label">Date ${verb}</span><input type="date" name="date" value="${date}" required></label>
+        ? `Changed for ${ymLabel(p.ym)} · default ${money(r.amount)} on day ${r.day} · <button type="button" class="link" data-action="month-amount-reset" data-rid="${esc(p.rid)}" data-ym="${esc(p.ym)}">Reset</button>`
+        : `Default: ${money(r.amount)} on day ${r.day} of every month`}</p>
+      <label class="field"><span class="label">Date</span><input type="date" name="date" value="${p.date}" min="${p.ym}-01" max="${p.ym}-${pad(daysIn(p.ym))}" required></label>
       <button class="btn btn-primary btn-lg btn-block">${ic('check')} Mark as ${verb}</button>
-      <button type="button" class="btn btn-block" data-action="month-amount" data-rid="${esc(p.rid)}" data-ym="${esc(p.ym)}">Not ${verb} yet — just save this amount for ${ymLabel(p.ym)}</button>
+      <button type="button" class="btn btn-block" data-action="month-amount" data-rid="${esc(p.rid)}" data-ym="${esc(p.ym)}">Not ${verb} yet — save amount &amp; date for ${ymLabel(p.ym)}</button>
       <div class="btn-row" style="justify-content:center">
         <button type="button" class="btn btn-ghost btn-sm" data-action="skip" data-rid="${esc(p.rid)}" data-ym="${esc(p.ym)}">${ic('skip', 16)} Skip this month</button>
         <button type="button" class="btn btn-ghost btn-sm" data-action="edit-recurring" data-id="${esc(r.id)}">${ic('edit', 16)} Edit fixed payment</button>
@@ -1226,19 +1227,20 @@ function recurringForm(r) {
       <label class="field"><span class="label">Name</span><input name="name" value="${esc(r.name)}" placeholder="e.g. Rent, Salary, Internet" required maxlength="60"></label>
       <div class="field"><span class="label">Category</span><div class="cat-grid" id="cat-grid">${catGrid(r.type, r.category)}</div></div>
       <div class="field-row">
-        <label class="field"><span class="label">Day of month</span><input type="number" name="day" min="1" max="31" value="${r.day}" required></label>
+        <label class="field"><span class="label">Planned day of month</span><input type="number" name="day" min="1" max="31" value="${r.day}" inputmode="numeric" required></label>
         <label class="field"><span class="label">Starts</span><input type="month" name="start" value="${esc(r.start)}" placeholder="YYYY-MM" pattern="\\d{4}-\\d{2}" required></label>
       </div>
       <label class="field"><span class="label">Ends (optional)</span><input type="month" name="end" value="${esc(r.end || '')}" placeholder="YYYY-MM" pattern="\\d{4}-\\d{2}"><span class="hint">Leave empty if it never ends. Changing the default doesn't touch months already paid.</span></label>
       ${isNew ? '' : `
-      <div class="field"><span class="label">Different amount in specific months</span>
+      <div class="field"><span class="label">Changes for specific months</span>
         <ul class="ov-list" id="ov-list">${overrideList(r)}</ul>
         <div class="ov-add">
           <input type="month" class="ov-month" value="${ymAdd(ymNow(), 1)}" placeholder="YYYY-MM" aria-label="Month">
           <input class="ov-amount" inputmode="decimal" placeholder="Amount" aria-label="Amount for that month">
+          <input class="ov-day" type="number" min="1" max="31" inputmode="numeric" placeholder="Day" aria-label="Planned day for that month">
           <button type="button" class="btn btn-sm" data-action="ov-add" data-rid="${esc(r.id)}">Set</button>
         </div>
-        <span class="hint">Every other month uses the default. You can also change a month from its Upcoming list.</span>
+        <span class="hint">Change the amount, the day, or both. Every other month uses the default. You can also tap the payment on the Month screen.</span>
       </div>`}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-recurring" data-id="${esc(r.id)}">${ic('trash', 18)} Delete</button>`}
@@ -1248,20 +1250,30 @@ function recurringForm(r) {
 }
 
 function overrideList(r) {
-  const months = Object.keys(r.overrides || {}).sort();
+  const months = [...new Set([...Object.keys(r.overrides || {}), ...Object.keys(r.days || {})])].sort();
   if (!months.length) return '<li class="hint">None — the default is used every month.</li>';
   return months.map(ym => `
-    <li><span>${ymLabel(ym)}</span><b class="num">${money(r.overrides[ym])}</b>
+    <li><span>${ymLabel(ym)}</span><b class="num">${[hasOverride(r, ym) && money(r.overrides[ym]), hasDayChange(r, ym) && `day ${r.days[ym]}`].filter(Boolean).join(' · ')}</b>
     <button type="button" class="icon-btn" data-action="ov-remove" data-rid="${esc(r.id)}" data-ym="${ym}" aria-label="Use default for ${ymLabel(ym)}">${ic('x', 16)}</button></li>`).join('');
 }
 
-/** Set (or clear, with amount = null) a single month's amount of a fixed payment. */
-function setOverride(rid, ym, amount) {
+/**
+ * Change a single month of a fixed payment. Pass amount and/or day: null resets it to the default,
+ * undefined leaves it as is.
+ */
+function setOverride(rid, ym, amount, day) {
   mutate(d => {
     const r = d.recurring.find(x => x.id === rid);
     r.overrides = { ...(r.overrides || {}) };
-    if (amount == null || amount === r.amount) delete r.overrides[ym];
-    else r.overrides[ym] = amount;
+    r.days = { ...(r.days || {}) };
+    if (amount !== undefined) {
+      if (amount == null || amount === r.amount) delete r.overrides[ym];
+      else r.overrides[ym] = amount;
+    }
+    if (day !== undefined) {
+      if (day == null || day === r.day) delete r.days[ym];
+      else r.days[ym] = day;
+    }
   });
   const list = $('#ov-list');
   if (list) list.innerHTML = overrideList(S.data.recurring.find(x => x.id === rid));
@@ -1442,7 +1454,7 @@ const ACTIONS = {
   },
   quickpay: el => {
     const p = findPending(el.dataset.id);
-    // Paying during the current month records today's date; catching up on an old month keeps the due date.
+    // Paying during the current month records today's date; catching up on an old month keeps the planned date.
     if (p) payPending(p, p.amount, p.ym === ymNow() ? todayISO() : p.date);
   },
   'open-pending': el => {
@@ -1498,26 +1510,34 @@ const ACTIONS = {
     const form = el.closest('form');
     const amount = parseAmount(form.amount.value);
     if (!(amount > 0)) return invalid(form, 'amount');
+    const date = form.date.value;
+    if (ymOf(date) !== el.dataset.ym) return invalid(form, 'date');
     closeSheet();
-    setOverride(el.dataset.rid, el.dataset.ym, amount);
-    toast(`Amount saved for ${ymLabel(el.dataset.ym)}`);
+    setOverride(el.dataset.rid, el.dataset.ym, amount, Number(date.slice(8)));
+    toast(`Saved for ${ymLabel(el.dataset.ym)}`);
   },
   'month-amount-reset': el => {
     closeSheet();
-    setOverride(el.dataset.rid, el.dataset.ym, null);
-    toast('Back to the default amount');
+    setOverride(el.dataset.rid, el.dataset.ym, null, null);
+    toast('Back to the default amount and day');
   },
   'ov-add': el => {
     const box = el.closest('.ov-add');
     const ym = $('.ov-month', box).value;
-    const amount = parseAmount($('.ov-amount', box).value);
+    const rawAmount = $('.ov-amount', box).value.trim();
+    const rawDay = $('.ov-day', box).value.trim();
+    const amount = rawAmount ? parseAmount(rawAmount) : undefined;
+    const day = rawDay ? Math.min(31, Math.max(0, Math.round(Number(rawDay)) || 0)) : undefined;
     if (!/^\d{4}-\d{2}$/.test(ym)) return $('.ov-month', box).focus();
-    if (!(amount > 0)) return $('.ov-amount', box).focus(); // use "Skip this month" for zero
-    setOverride(el.dataset.rid, ym, amount);
+    if (amount === undefined && day === undefined) return $('.ov-amount', box).focus();
+    if (amount !== undefined && !(amount > 0)) return $('.ov-amount', box).focus(); // use "Skip this month" for zero
+    if (day !== undefined && !day) return $('.ov-day', box).focus();
+    setOverride(el.dataset.rid, ym, amount, day);
     $('.ov-amount', box).value = '';
-    toast(`${ymLabel(ym)} set to ${money(amount)}`);
+    $('.ov-day', box).value = '';
+    toast(`${ymLabel(ym)} updated`);
   },
-  'ov-remove': el => setOverride(el.dataset.rid, el.dataset.ym, null),
+  'ov-remove': el => setOverride(el.dataset.rid, el.dataset.ym, null, null),
   'inline-cat': el => {
     el.outerHTML = inlineCatEditor(el.dataset.type);
     $('#sheet .inline-cat .ic-name').focus();
@@ -1940,6 +1960,7 @@ document.addEventListener('submit', e => {
 
 document.addEventListener('change', e => {
   const el = e.target;
+  if (el.name === 'paid' && $('#tx-date-label')) $('#tx-date-label').textContent = el.checked ? 'Date' : 'Planned date';
   // Switching expense/income inside a form swaps the category list and labels.
   if (el.name === 'type' && el.type === 'radio') {
     const form = el.form;
@@ -2060,6 +2081,52 @@ function endPull() {
 
 document.addEventListener('touchend', endPull);
 document.addEventListener('touchcancel', () => { ptr = null; setPull(0); });
+
+/* ---------- drag the sheet down to close it (mobile) ---------- */
+
+let sheetDrag = null;
+
+function setSheetDrag(dy) {
+  const panel = $('#sheet .sheet-panel');
+  const backdrop = $('#sheet .sheet-backdrop');
+  panel.style.transition = dy ? 'none' : '';
+  panel.style.transform = dy ? `translateY(${dy}px)` : '';
+  backdrop.style.transition = dy ? 'none' : '';
+  backdrop.style.opacity = dy ? String(Math.max(0, 1 - dy / panel.offsetHeight)) : '';
+}
+
+document.addEventListener('touchstart', e => {
+  const panel = e.target.closest?.('#sheet .sheet-panel');
+  if (!panel || e.touches.length !== 1 || window.matchMedia('(min-width: 640px)').matches) return;
+  // From the handle/title it always drags; elsewhere only once the form is scrolled to the top.
+  const fromHead = !!e.target.closest('.sheet-head') || e.touches[0].clientY - panel.getBoundingClientRect().top < 40;
+  if (!fromHead && panel.scrollTop > 0) return;
+  sheetDrag = { y0: e.touches[0].clientY, t0: Date.now(), dy: 0, panel, fromHead };
+}, { passive: true });
+
+document.addEventListener('touchmove', e => {
+  if (!sheetDrag) return;
+  const dy = e.touches[0].clientY - sheetDrag.y0;
+  if (sheetDrag.dy === 0 && (dy < 0 || (!sheetDrag.fromHead && sheetDrag.panel.scrollTop > 0))) {
+    sheetDrag = null; // scrolling the form up: not a drag
+    return;
+  }
+  if (e.cancelable) e.preventDefault();
+  sheetDrag.dy = Math.max(0, dy);
+  setSheetDrag(sheetDrag.dy);
+}, { passive: false });
+
+function endSheetDrag() {
+  if (!sheetDrag) return;
+  const { dy, t0, panel } = sheetDrag;
+  sheetDrag = null;
+  const fast = dy > 30 && dy / Math.max(1, Date.now() - t0) > 0.6;
+  setSheetDrag(0);
+  if (dy > Math.min(140, panel.offsetHeight * 0.3) || fast) closeSheet();
+}
+
+document.addEventListener('touchend', endSheetDrag);
+document.addEventListener('touchcancel', endSheetDrag);
 
 window.addEventListener('online', () => { S.offline = false; flush(); refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { S.dirty ? flush() : refresh(); } });
