@@ -88,6 +88,7 @@ const P = {
   edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
   target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   next: '<path d="M4 12h13M13 6l6 6-6 6"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
 };
 
 const ic = (name, size = 20) =>
@@ -106,6 +107,7 @@ const S = {
   search: '',
   dirty: false,
   saving: false,
+  syncing: false,
   offline: false,
   seq: 0,
   undo: null,
@@ -320,9 +322,58 @@ async function refresh() {
   updateSync();
 }
 
+/** Force a full sync: push pending edits, then always reload the server copy. */
+async function syncNow() {
+  if (!S.data || S.syncing) return;
+  S.syncing = true;
+  S.offline = false;
+  clearTimeout(saveTimer);
+  updateSync();
+  try {
+    while (S.saving) await new Promise(r => setTimeout(r, 100));
+    await flush();
+    if (S.dirty) {
+      toast(S.offline ? 'Offline — changes will sync when you reconnect' : 'Could not sync, try again');
+      return;
+    }
+    const res = await api('load');
+    S.offline = false;
+    // Skip if an edit was made while loading; it will save on its own.
+    if (res.data && !S.dirty) {
+      const changed = res.rev !== S.rev;
+      S.data = normalize(res.data);
+      S.rev = res.rev;
+      writeCache();
+      if ($('#sheet').hidden) render();
+      toast(changed ? 'Synced — loaded the latest changes' : 'Up to date');
+    }
+  } catch (e) {
+    if (e.status === 401) showAuth('login');
+    else { S.offline = true; toast('Offline — showing your saved copy'); }
+  } finally {
+    S.syncing = false;
+    updateSync();
+  }
+}
+
+/** Get the newest app files, bypassing every cache, then reload. Data is kept. */
+async function forceUpdate() {
+  if (S.syncing) return;
+  toast('Updating…');
+  if (S.data && S.dirty) await syncNow();
+  if (S.offline) return toast('You are offline — connect to update the app');
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    await reg?.update();
+    if ('caches' in window) await Promise.all((await caches.keys()).map(k => caches.delete(k)));
+    await Promise.all(['./', 'index.html', 'css/style.css', 'js/app.js', 'sw.js'].map(u => fetch(u, { cache: 'reload' }).catch(() => {})));
+  } catch (e) { /* reload anyway */ }
+  location.reload();
+}
+
 function updateSync() {
-  const text = S.saving ? 'Saving…' : S.offline ? (S.dirty ? 'Offline · will sync' : 'Offline') : S.dirty ? 'Saving…' : 'All saved';
-  const cls = S.saving || (S.dirty && !S.offline) ? 'saving' : S.offline ? 'offline' : '';
+  const text = S.syncing ? 'Syncing…' : S.saving ? 'Saving…' : S.offline ? (S.dirty ? 'Offline · will sync' : 'Offline') : S.dirty ? 'Saving…' : 'All saved';
+  const cls = S.syncing || S.saving || (S.dirty && !S.offline) ? 'saving' : S.offline ? 'offline' : '';
   $$('.sync').forEach(el => { el.className = `sync ${cls}`; el.textContent = text; });
 }
 
@@ -359,6 +410,7 @@ function renderShell() {
   const tab = k => `<button class="tab" data-action="go" data-view="${k}">${ic(VIEWS[k].icon, 22)}<span>${VIEWS[k].label}</span></button>`;
 
   $('#app').innerHTML = `
+    <div class="ptr" id="ptr" aria-hidden="true">${ic('refresh')}</div>
     <aside class="sidebar">
       <div class="brand"><img src="icon.svg" alt=""><div><b>BB Cash</b><small>Personal cashflow</small></div></div>
       <button class="btn btn-primary btn-lg btn-block" data-action="add">${ic('plus')} New entry</button>
@@ -401,7 +453,7 @@ function render() {
   const v = VIEWS[S.view];
   $('#title').textContent = v.title;
   $('#title-desk').textContent = v.title;
-  const showMonth = S.view === 'month' || S.view === 'stats' || S.view === 'settings';
+  const showMonth = S.view === 'month' || S.view === 'stats';
   $('#month-switch').hidden = !showMonth;
   $('#title').hidden = showMonth; // mobile: logo + month switch only, to fit narrow screens
   const isNow = S.month === ymNow();
@@ -768,6 +820,35 @@ function viewGoals() {
 
 /* ---------- Insights view ---------- */
 
+/** Per-category cards for the selected month: done so far + still expected, against budget/target. */
+function categoryMonthCards() {
+  const done = new Map();
+  for (const t of S.data.transactions) if (t.paid && ymOf(t.date) === S.month) done.set(t.category, (done.get(t.category) || 0) + t.amount);
+  const planned = new Map();
+  for (const p of pendingFor(S.month)) planned.set(p.category, (planned.get(p.category) || 0) + p.amount);
+
+  const catRows = type => catsOf(type).map(c => {
+    const d = round2(done.get(c.id) || 0);
+    const p = round2(planned.get(c.id) || 0);
+    let detail = type === 'income' ? 'received' : 'spent';
+    if (p) detail = `${fmtNumber(d)} ${detail} · ${fmtNumber(p)} expected`;
+    if (c.budget > 0) detail += ` · ${type === 'income' ? 'target' : 'budget'} ${fmtNumber(c.budget)}`;
+    return `
+    <li><button class="row-btn" data-action="edit-cat" data-id="${esc(c.id)}">
+      ${catIcon(c, 'sm')}
+      <span class="row-text"><span class="row-title">${esc(c.name)}</span></span>
+      <span class="amt ${d + p ? type : 'zero'}">${money(d + p)}<small>${detail}</small></span>
+    </button></li>`;
+  }).join('');
+  const typeTotal = type => money(sum(catsOf(type), c => (done.get(c.id) || 0) + (planned.get(c.id) || 0)));
+  const card = (type, title) => `
+        <section class="card">
+          <header class="card-head"><div><h2>${title}</h2><span class="sub">${ymLabel(S.month)} · ${typeTotal(type)}</span></div></header>
+          <ul class="list">${catRows(type)}</ul>
+        </section>`;
+  return card('expense', 'Expenses by category') + card('income', 'Income by category');
+}
+
 function viewStats() {
   const totals = totalsByMonth();
   const months = Array.from({ length: 12 }, (_, i) => ymAdd(S.month, i - 11));
@@ -815,6 +896,7 @@ function viewStats() {
           </header>
           ${box('ch-pace')}
         </section>
+        ${categoryMonthCards()}
       </div>
     </div>`;
 }
@@ -932,26 +1014,12 @@ function drawCharts() {
 
 function viewSettings() {
   const st = S.data.settings;
-  // Per-category amounts for the month selected on the Month screen: done so far + still expected.
-  const done = new Map();
-  for (const t of S.data.transactions) if (t.paid && ymOf(t.date) === S.month) done.set(t.category, (done.get(t.category) || 0) + t.amount);
-  const planned = new Map();
-  for (const p of pendingFor(S.month)) planned.set(p.category, (planned.get(p.category) || 0) + p.amount);
-
-  const catRows = type => catsOf(type).map(c => {
-    const d = round2(done.get(c.id) || 0);
-    const p = round2(planned.get(c.id) || 0);
-    let detail = type === 'income' ? 'received' : 'spent';
-    if (p) detail = `${fmtNumber(d)} ${detail} · ${fmtNumber(p)} expected`;
-    if (type === 'expense' && c.budget > 0) detail += ` · budget ${fmtNumber(c.budget)}`;
-    return `
+  const catRows = type => catsOf(type).map(c => `
     <li><button class="row-btn" data-action="edit-cat" data-id="${esc(c.id)}">
       ${catIcon(c, 'sm')}
       <span class="row-text"><span class="row-title">${esc(c.name)}</span></span>
-      <span class="amt ${d + p ? type : 'zero'}">${money(d + p)}<small>${detail}</small></span>
-    </button></li>`;
-  }).join('');
-  const typeTotal = type => money(sum(catsOf(type), c => (done.get(c.id) || 0) + (planned.get(c.id) || 0)));
+      <span class="amt ${c.budget > 0 ? '' : 'zero'}">${c.budget > 0 ? money(c.budget) : '—'}<small>${type === 'income' ? 'monthly target' : 'monthly budget'}</small></span>
+    </button></li>`).join('');
 
   return `
     <div class="grid-2">
@@ -975,16 +1043,20 @@ function viewSettings() {
           <button class="btn" data-action="export-csv">${ic('download', 18)} Export CSV</button>
           <label class="btn">${ic('upload', 18)} Restore<input type="file" id="import-file" accept=".json,application/json" hidden></label>
         </div>
-        <div class="set-row" style="margin-top:12px"><span class="lbl">Sync status</span><span class="sync"></span></div>
+        <div class="set-row" style="margin-top:12px"><span class="lbl">Sync status<small>On your phone, pull down on any page to sync</small></span><span class="sync"></span></div>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn" data-action="sync-now">${ic('refresh', 18)} Sync now</button>
+          <button class="btn" data-action="force-update">${ic('download', 18)} Update app</button>
+        </div>
       </section>
 
       <section class="card">
-        <header class="card-head"><div><h2>Expense categories &amp; budgets</h2><span class="sub">${ymLabel(S.month)} · ${typeTotal('expense')}</span></div><button class="btn btn-sm" data-action="new-cat" data-type="expense">${ic('plus', 16)} Add</button></header>
+        <header class="card-head"><div><h2>Expense categories &amp; budgets</h2><span class="sub">Tap one to edit</span></div><button class="btn btn-sm" data-action="new-cat" data-type="expense">${ic('plus', 16)} Add</button></header>
         <ul class="list">${catRows('expense')}</ul>
       </section>
 
       <section class="card">
-        <header class="card-head"><div><h2>Income categories</h2><span class="sub">${ymLabel(S.month)} · ${typeTotal('income')}</span></div><button class="btn btn-sm" data-action="new-cat" data-type="income">${ic('plus', 16)} Add</button></header>
+        <header class="card-head"><div><h2>Income categories &amp; targets</h2><span class="sub">Tap one to edit</span></div><button class="btn btn-sm" data-action="new-cat" data-type="income">${ic('plus', 16)} Add</button></header>
         <ul class="list">${catRows('income')}</ul>
       </section>
 
@@ -1033,16 +1105,33 @@ const typeSeg = (type, name = 'type') => `
     <label class="t-income"><input type="radio" name="${name}" value="income" ${type === 'income' ? 'checked' : ''}><span>${ic('down', 16)} Income</span></label>
   </div>`;
 
-function catGrid(type, selected) {
-  const list = catsOf(type);
+/** Categories only ever used by fixed payments: those are marked done from the Month list, not added by hand. */
+function fixedOnlyCats() {
+  const now = ymNow();
+  const fixed = new Set(S.data.recurring.filter(r => !r.end || r.end >= now).map(r => r.category));
+  for (const t of S.data.transactions) if (!t.recurringId) fixed.delete(t.category);
+  return fixed;
+}
+
+/** Category picker. hideFixed (new-entry form) tucks fixed-only categories behind a "More" chip. */
+function catGrid(type, selected, hideFixed = false) {
+  const all = catsOf(type);
+  const fixed = hideFixed ? fixedOnlyCats() : new Set();
+  let list = all.filter(c => !fixed.has(c.id) || c.id === selected);
+  if (!list.length) list = all;
+  const more = list.length < all.length
+    ? `<button type="button" class="cat-chip cat-new" data-action="cat-all" data-type="${type}"><span><i>…</i>Fixed</span></button>` : '';
   const sel = list.some(c => c.id === selected) ? selected : list[0]?.id;
   return list.map(c => `
     <label class="cat-chip" style="--c:${esc(c.color)}">
       <input type="radio" name="category" value="${esc(c.id)}" ${c.id === sel ? 'checked' : ''} required>
       <span><i>${glyph(c)}</i>${esc(c.name)}</span>
     </label>`).join('') +
-    `<button type="button" class="cat-chip cat-new" data-action="inline-cat" data-type="${type}"><span><i>＋</i>New</span></button>`;
+    more + `<button type="button" class="cat-chip cat-new" data-action="inline-cat" data-type="${type}"><span><i>＋</i>New</span></button>`;
 }
+
+/** The new-entry form's grid hides fixed-only categories; every other picker shows them all. */
+const gridHidesFixed = grid => grid?.dataset.hideFixed === '1';
 
 /** Small inline editor that replaces the "+ New" chip, so a category can be created mid-entry. */
 function inlineCatEditor(type) {
@@ -1072,18 +1161,19 @@ const defaultDate = () => (S.month === ymNow() ? todayISO() : `${S.month}-01`);
 
 function txForm(t) {
   const isNew = !t;
-  t = t || { type: 'expense', amount: '', category: '', date: defaultDate(), note: '', paid: true };
+  // New entries default to planned: most are expected expenses, marked paid later.
+  t = t || { type: 'expense', amount: '', category: '', date: defaultDate(), note: '', paid: false };
   openSheet(isNew ? 'New entry' : 'Edit entry', `
     <form class="form" data-form="tx">
       <input type="hidden" name="id" value="${esc(t.id || '')}">
       ${typeSeg(t.type)}
       ${amountField(t.type, t.amount)}
-      <div class="field"><span class="label">Category</span><div class="cat-grid" id="cat-grid">${catGrid(t.type, t.category)}</div></div>
+      <div class="field"><span class="label">Category</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
       <div class="field-row">
         <label class="field"><span class="label">Date</span><input type="date" name="date" value="${esc(t.date)}" required></label>
         <label class="field"><span class="label">Note</span><input name="note" value="${esc(t.note || '')}" placeholder="Optional" maxlength="80"></label>
       </div>
-      <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Turn off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
+      <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
       ${!isNew && !t.paid && !t.recurringId
         ? `<button type="button" class="btn btn-block" data-action="move-next" data-id="${esc(t.id)}">${ic('next', 18)} Move to ${ymLabel(ymAdd(ymOf(t.date), 1))}</button>` : ''}
       <div class="sheet-actions">
@@ -1173,6 +1263,11 @@ const EMOJIS = ['🏠', '🛒', '🚗', '⛽', '💡', '💧', '📱', '🌐', '
 const GOAL_EMOJIS = ['🎯', '🚗', '💻', '🏠', '✈️', '🎧', '🏋️', '📷', '🪑', '💍', '🎓', '🏖️', '📱', '🛋️', '🐶', '🏦'];
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#10b981', '#14b8a6', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#d946ef', '#ec4899', '#f43f5e', '#64748b'];
 
+const budgetLabel = type => `${type === 'income' ? 'Monthly target' : 'Monthly budget'} (${esc(S.data.settings.currency)})`;
+const budgetHint = type => type === 'income'
+  ? 'How much you expect to receive each month. Shown next to what you actually received.'
+  : 'A monthly spending limit. Leave empty for no limit.';
+
 function catForm(c, type) {
   const isNew = !c;
   c = c || { name: '', icon: '📦', color: COLORS[Math.floor(Math.random() * COLORS.length)], type, budget: 0 };
@@ -1191,7 +1286,7 @@ function catForm(c, type) {
         <div class="field-row" style="grid-template-columns:70px 1fr;align-items:center"><input type="color" name="color" value="${esc(c.color)}">
         <div class="swatches">${COLORS.map(x => `<button type="button" style="--c:${x}" data-action="pick-color" data-color="${x}" aria-label="${x}"></button>`).join('')}</div></div>
       </div>
-      <label class="field"><span class="label">Monthly budget (${esc(S.data.settings.currency)})</span><input name="budget" inputmode="decimal" value="${c.budget || ''}" placeholder="No limit"><span class="hint">Only used for expense categories.</span></label>
+      <label class="field"><span class="label" id="cat-budget-label">${budgetLabel(c.type)}</span><input name="budget" inputmode="decimal" value="${c.budget || ''}" placeholder="None"><span class="hint" id="cat-budget-hint">${budgetHint(c.type)}</span></label>
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-cat" data-id="${esc(c.id)}">${ic('trash', 18)} Delete</button>`}
         <button class="btn btn-primary btn-lg">${isNew ? 'Create' : 'Save'}</button>
@@ -1389,6 +1484,8 @@ const ACTIONS = {
     render();
   },
   'install-help': installHelp,
+  'sync-now': syncNow,
+  'force-update': forceUpdate,
   'month-amount': el => {
     const form = el.closest('form');
     const amount = parseAmount(form.amount.value);
@@ -1420,7 +1517,7 @@ const ACTIONS = {
   'inline-cat-cancel': el => {
     const box = el.closest('.inline-cat');
     const grid = box.closest('.cat-grid');
-    grid.innerHTML = catGrid(box.dataset.type, $('input[name="category"]:checked', grid)?.value);
+    grid.innerHTML = catGrid(box.dataset.type, $('input[name="category"]:checked', grid)?.value, gridHidesFixed(grid));
   },
   'inline-cat-save': el => {
     const box = el.closest('.inline-cat');
@@ -1429,7 +1526,13 @@ const ACTIONS = {
     const c = { id: uid(), name, icon: $('.ic-emoji', box)?.value.trim() || '📦', color: COLORS[Math.floor(Math.random() * COLORS.length)], type: box.dataset.type, budget: 0 };
     mutate(d => d.categories.push(c));
     toast(`Category "${name}" added`);
-    box.closest('.cat-grid').innerHTML = catGrid(c.type, c.id);
+    const grid = box.closest('.cat-grid');
+    grid.innerHTML = catGrid(c.type, c.id, gridHidesFixed(grid));
+  },
+  'cat-all': el => {
+    const grid = el.closest('.cat-grid');
+    delete grid.dataset.hideFixed;
+    grid.innerHTML = catGrid(el.dataset.type, $('input[name="category"]:checked', grid)?.value);
   },
   'pick-emoji': el => { $('#sheet [name="icon"]').value = el.dataset.emoji; },
   'pick-color': el => {
@@ -1517,7 +1620,7 @@ const FORMS = {
     const id = fd.get('id');
     const c = {
       name: fd.get('name').trim(), icon: fd.get('icon').trim() || '📦', color: fd.get('color'), type: fd.get('ctype'),
-      budget: fd.get('ctype') === 'expense' ? (parseAmount(fd.get('budget')) || 0) : 0,
+      budget: parseAmount(fd.get('budget')) || 0,
     };
     closeSheet();
     if (id) mutate(d => Object.assign(d.categories.find(x => x.id === id), c), 'Category saved');
@@ -1833,11 +1936,15 @@ document.addEventListener('change', e => {
   if (el.name === 'type' && el.type === 'radio') {
     const form = el.form;
     const grid = $('#cat-grid', form);
-    if (grid) grid.innerHTML = catGrid(el.value, $('input[name="category"]:checked', form)?.value);
+    if (grid) grid.innerHTML = catGrid(el.value, $('input[name="category"]:checked', form)?.value, gridHidesFixed(grid));
     $('.amount-field', form)?.classList.remove('expense', 'income');
     $('.amount-field', form)?.classList.add(el.value);
     const sw = $('.switch > span', form);
     if (sw) sw.firstChild.textContent = `Already ${el.value === 'income' ? 'received' : 'paid'}`;
+  }
+  if (el.name === 'ctype' && el.type === 'radio') {
+    $('#cat-budget-label').textContent = budgetLabel(el.value);
+    $('#cat-budget-hint').textContent = budgetHint(el.value);
   }
   if (el.dataset.setting) {
     const key = el.dataset.setting;
@@ -1891,11 +1998,60 @@ document.addEventListener('keydown', e => {
   if (!S.data || !$('#sheet').hidden || $('#app').hidden) return;
   if (e.target.matches('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); txForm(); }
-  if (S.view === 'month' || S.view === 'stats' || S.view === 'settings') {
+  if (S.view === 'month' || S.view === 'stats') {
     if (e.key === 'ArrowLeft') ACTIONS['prev-month']();
     if (e.key === 'ArrowRight') ACTIONS['next-month']();
   }
 });
+
+/* ---------- pull to refresh (touch) ---------- */
+
+const PTR_MAX = 110;
+const PTR_TRIGGER = 70;
+let ptr = null;
+
+function setPull(px, spinning) {
+  const el = $('#ptr');
+  if (!el) return;
+  el.classList.toggle('show', px > 0);
+  el.classList.toggle('drag', !!ptr && !spinning);
+  el.classList.toggle('ready', px >= PTR_TRIGGER);
+  el.classList.toggle('spin', !!spinning);
+  el.style.transform = `translate(-50%, ${px}px)`;
+  el.firstElementChild.style.transform = `rotate(${px * 3}deg)`;
+}
+
+document.addEventListener('touchstart', e => {
+  if (e.touches.length !== 1 || window.scrollY > 0 || !S.data || S.syncing || $('#app').hidden || !$('#sheet').hidden) return;
+  ptr = { x0: e.touches[0].clientX, y0: e.touches[0].clientY, px: 0 };
+}, { passive: true });
+
+document.addEventListener('touchmove', e => {
+  if (!ptr) return;
+  const dx = e.touches[0].clientX - ptr.x0;
+  const dy = e.touches[0].clientY - ptr.y0;
+  // Scrolling up or swiping sideways: let the page handle it.
+  if (dy < 0 || (ptr.px === 0 && Math.abs(dx) > dy) || window.scrollY > 0) {
+    ptr = null;
+    setPull(0);
+    return;
+  }
+  if (e.cancelable) e.preventDefault();
+  ptr.px = Math.min(dy * 0.5, PTR_MAX);
+  setPull(ptr.px);
+}, { passive: false });
+
+function endPull() {
+  if (!ptr) return;
+  const go = ptr.px >= PTR_TRIGGER;
+  ptr = null;
+  if (!go) return setPull(0);
+  setPull(64, true);
+  syncNow().finally(() => setPull(0));
+}
+
+document.addEventListener('touchend', endPull);
+document.addEventListener('touchcancel', () => { ptr = null; setPull(0); });
 
 window.addEventListener('online', () => { S.offline = false; flush(); refresh(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { S.dirty ? flush() : refresh(); } });
