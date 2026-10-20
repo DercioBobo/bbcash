@@ -1,0 +1,21 @@
+# BB Cash — Apache / cPanel config
+Options -Indexes
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+
+  # Force HTTPS (skip for local testing). If your host sits behind Cloudflare
+  # "Flexible SSL" and you get a redirect loop, comment out these 3 lines.
+  RewriteCond %{HTTPS} off
+  RewriteCond %{HTTP_HOST} !^(localhost|127\.0\.0\.1)
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+  # Never serve your data, your personal documents or editor files directly
+  RewriteRule ^(data|docs|\.idea)(/|$) - [F,L]
+</IfModule>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Referrer-Policy "same-origin"
+  Header always set X-Frame-Options "DENY"
+</IfModule>

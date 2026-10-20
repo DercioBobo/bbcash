@@ -1,0 +1,29 @@
+{
+  "id": "./",
+  "short_name": "BB Cash",
+  "name": "BB Cash — Personal Cashflow",
+  "description": "Income, expenses, fixed payments, budgets, goals and debts — month by month.",
+  "icons": [
+    { "src": "icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
+    { "src": "icon.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "icon.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+    { "src": "icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ],
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f3d36",
+  "theme_color": "#0f3d36",
+  "categories": ["finance", "productivity"],
+  "shortcuts": [
+    {
+      "name": "New entry",
+      "short_name": "Add",
+      "description": "Add an expense or income",
+      "url": "./?add=1",
+      "icons": [{ "src": "icon.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
