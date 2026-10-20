@@ -230,24 +230,23 @@ const debtPaid = d => round2((Number(d.initial) || 0) + linkedTotal('debtId', d.
 const debtLeft = d => Math.max(0, round2(d.total - debtPaid(d)));
 
 /**
- * One month on its own — nothing carries over from earlier months.
- * In the current month only entries dated up to today count; later-dated ones go to the projection.
+ * One month's plan, nothing carried over from earlier months:
+ * income = received + still expected; left = income − spent − still to pay.
  */
 function summary(ym) {
-  const today = ym === ymNow() ? todayISO() : null;
-  let inc = 0, exp = 0, later = 0;
+  let received = 0, spent = 0;
   for (const t of S.data.transactions) {
     if (!t.paid || ymOf(t.date) !== ym) continue;
-    const sign = t.type === 'income' ? 1 : -1;
-    if (today && t.date > today) later += sign * t.amount;
-    else if (sign > 0) inc += t.amount;
-    else exp += t.amount;
+    if (t.type === 'income') received += t.amount; else spent += t.amount;
   }
   const pending = pendingFor(ym);
   const pIn = sum(pending.filter(p => p.type === 'income'), p => p.amount);
   const pOut = sum(pending.filter(p => p.type === 'expense'), p => p.amount);
-  const balance = round2(inc - exp);
-  return { income: round2(inc), expense: round2(exp), balance, pIn, pOut, later, projected: round2(balance + later + pIn - pOut), pending };
+  const income = round2(received + pIn);
+  return {
+    received: round2(received), spent: round2(spent), pIn: round2(pIn), pOut: round2(pOut), income,
+    left: round2(income - spent - pOut), toPayCount: pending.filter(p => p.type === 'expense').length, pending,
+  };
 }
 
 /* ======================================================================
@@ -597,11 +596,10 @@ function viewMonth() {
     <div class="grid-month" ${banner ? 'style="margin-top:12px"' : ''}>
       <div class="col">
         ${heroCard(s)}
-        ${txCard(txs)}
+        ${pendingCard(s)}
       </div>
       <div class="col">
-        ${pendingCard(s)}
-        ${budgetsCard(txs, s.pending)}
+        ${txCard(txs)}
       </div>
     </div>`;
 }
@@ -620,32 +618,28 @@ function overdueBanner() {
 }
 
 function heroCard(s) {
-  const now = ymNow();
-  const label = S.month === now ? 'Balance today' : S.month < now ? 'Month balance' : 'Balance so far';
-  const sub = S.month === now ? `Up to ${dateShort(todayISO())}` : ymLabel(S.month);
-  const ratio = s.income > 0 ? Math.min(100, (s.expense / s.income) * 100) : s.expense > 0 ? 100 : 0;
-  const saved = s.income - s.expense;
-  let foot = 'No income recorded yet this month';
-  if (s.income > 0) {
-    foot = `Spent ${Math.round((s.expense / s.income) * 100)}% of income`;
-    foot += saved >= 0 ? ` · kept ${money(saved)}` : ` · overspent ${money(-saved)}`;
-  }
+  const n = s.toPayCount;
+  // Bar = the month's income split into spent / still to pay / left (or the total cost if that's bigger).
+  const scale = Math.max(s.income, s.spent + s.pOut) || 1;
+  const w = v => `${Math.max(0, (v / scale) * 100)}%`;
+  const short = s.left < 0;
   return `
     <section class="card hero o1">
       <div class="hero-top">
-        <span class="hero-label">${label}</span>
-        <span class="hero-open">${sub}</span>
+        <span class="hero-label">Still to pay</span>
+        <span class="hero-open">${n ? `${n} payment${n > 1 ? 's' : ''} · ${ymLabel(S.month)}` : ymLabel(S.month)}</span>
       </div>
-      <div class="hero-amount">${moneyBig(s.balance)}</div>
-      <div class="hero-proj">${s.pending.length || s.later
-        ? `Projected end of month <b>${money(s.projected)}</b>`
-        : 'Nothing pending — all planned items settled ✓'}</div>
-      <div class="hero-stats">
-        <div class="hero-stat"><small><span class="arrow in">${ic('down', 12)}</span>Income</small><b>${money(s.income)}</b></div>
-        <div class="hero-stat"><small><span class="arrow out">${ic('up', 12)}</span>Expenses</small><b>${money(s.expense)}</b></div>
+      <div class="hero-amount">${moneyBig(s.pOut)}</div>
+      <div class="hero-proj">${n ? `${short ? 'Income doesn’t cover it all' : `After paying everything you keep <b>${money(s.left)}</b>`}` : 'Everything planned is paid ✓'}</div>
+      <div class="hero-bar split" role="img" aria-label="Spent ${money(s.spent)}, still to pay ${money(s.pOut)}, ${short ? 'short' : 'left'} ${money(Math.abs(s.left))}">
+        <span class="spent" style="width:${w(s.spent)}"></span><span class="topay" style="width:${w(s.pOut)}"></span>
       </div>
-      <div class="hero-bar"><span style="width:${ratio}%"></span></div>
-      <div class="hero-foot">${foot}</div>
+      <div class="hero-legend">
+        <div><small><i class="spent"></i>Spent</small><b>${money(s.spent)}</b></div>
+        <div><small><i class="topay"></i>To pay</small><b>${money(s.pOut)}</b></div>
+        <div class="${short ? 'short' : ''}"><small><i class="left"></i>${short ? 'Short' : 'Left'}</small><b>${money(Math.abs(s.left))}</b></div>
+      </div>
+      <div class="hero-foot">Income this month <b>${money(s.income)}</b>${s.pIn ? ` · ${money(s.pIn)} still to come` : ''}</div>
     </section>`;
 }
 
@@ -998,7 +992,7 @@ function viewStats() {
       <div class="grid-2">
         <section class="card span-2">
           <header class="card-head"><h2>Last 12 months</h2>
-            <div class="chart-legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--expense)"></i>Expenses</span><span><i class="line" style="background:var(--accent)"></i>Net</span></div>
+            <div class="chart-legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--spend)"></i>Expenses</span><span><i class="line" style="background:var(--accent)"></i>Net</span></div>
           </header>
           ${box('ch-months', 'tall')}
         </section>
@@ -1010,10 +1004,11 @@ function viewStats() {
         </section>
         <section class="card">
           <header class="card-head"><h2>Spending pace</h2>
-            <div class="chart-legend"><span><i class="line" style="background:var(--expense)"></i>${ymShort(S.month)}</span><span><i class="line" style="background:var(--muted)"></i>${ymShort(ymAdd(S.month, -1))}</span></div>
+            <div class="chart-legend"><span><i class="line" style="background:var(--spend)"></i>${ymShort(S.month)}</span><span><i class="line" style="background:var(--muted)"></i>${ymShort(ymAdd(S.month, -1))}</span></div>
           </header>
           ${box('ch-pace')}
         </section>
+        ${budgetsCard(S.data.transactions.filter(t => t.paid && ymOf(t.date) === S.month), pendingFor(S.month))}
         ${categoryMonthCards()}
       </div>
     </div>`;
@@ -1059,7 +1054,7 @@ function drawCharts() {
         datasets: [
           { type: 'line', label: 'Net', data: months.map(m => round2((totals.get(m)?.inc || 0) - (totals.get(m)?.exp || 0))), borderColor: v('--accent'), backgroundColor: v('--accent'), borderWidth: 2.5, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 5, yAxisID: 'y1', order: 0 },
           { type: 'bar', label: 'Income', data: months.map(m => round2(totals.get(m)?.inc || 0)), backgroundColor: v('--income'), borderRadius: 6, maxBarThickness: 18, order: 1 },
-          { type: 'bar', label: 'Expenses', data: months.map(m => round2(totals.get(m)?.exp || 0)), backgroundColor: v('--expense'), borderRadius: 6, maxBarThickness: 18, order: 1 },
+          { type: 'bar', label: 'Expenses', data: months.map(m => round2(totals.get(m)?.exp || 0)), backgroundColor: v('--spend'), borderRadius: 6, maxBarThickness: 18, order: 1 },
         ],
       },
       options: {
@@ -1111,7 +1106,7 @@ function drawCharts() {
       data: {
         labels: Array.from({ length: len }, (_, i) => i + 1),
         datasets: [
-          { label: ymShort(S.month), data: isNow ? cur.slice(0, today) : cur, borderColor: v('--expense'), backgroundColor: v('--expense') + '22', fill: true, borderWidth: 2.5, cubicInterpolationMode: 'monotone', pointRadius: 0 },
+          { label: ymShort(S.month), data: isNow ? cur.slice(0, today) : cur, borderColor: v('--spend'), backgroundColor: v('--spend') + '22', fill: true, borderWidth: 2.5, cubicInterpolationMode: 'monotone', pointRadius: 0 },
           { label: ymShort(ymAdd(S.month, -1)), data: prev, borderColor: v('--muted'), borderDash: [5, 4], borderWidth: 2, cubicInterpolationMode: 'monotone', pointRadius: 0 },
         ],
       },
