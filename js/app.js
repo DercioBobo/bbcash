@@ -162,8 +162,9 @@ function normalize(d) {
   };
 }
 
-// Settings → Category icons: 'initials' (default, no emojis) or 'emoji'.
+// Settings → Category icons: 'initials' (default), 'emoji', or 'none' (plain text, just a colour stripe).
 const useEmoji = () => S.data?.settings.iconStyle === 'emoji';
+const plainCats = () => S.data?.settings.iconStyle === 'none';
 /** Up to two initials from the name's words: "Rancho & Groceries" → "RG". */
 const initials = name => (String(name).match(/[\p{L}\p{N}]+/gu) || ['?']).slice(0, 2).map(w => w[0]).join('').toUpperCase();
 const glyph = c => (useEmoji() && c.icon ? esc(c.icon) : `<b class="ini">${esc(initials(c.name))}</b>`);
@@ -173,9 +174,15 @@ const deco = (e, after = '') => (useEmoji() ? e + after : '');
 const UNCATEGORIZED = { id: '', name: 'Uncategorized', icon: '❔', color: '#94a3b8', type: 'expense', budget: 0 };
 const cat = id => S.data.categories.find(c => c.id === id) || UNCATEGORIZED;
 const catsOf = type => S.data.categories.filter(c => c.type === type);
+/** The catch-all "Other" category of a type: new entries default to it so a category is never required. */
+const otherCat = type => {
+  const list = catsOf(type);
+  return (list.find(c => c.id === (type === 'income' ? 'other-in' : 'other-out')) || list.find(c => /^other/i.test(c.name)))?.id || '';
+};
 /** Category tile; pass a type to add a small ↓ income / ↑ expense badge in the corner. */
-const catIcon = (c, cls = '', type = '') =>
-  `<span class="cat-ic ${cls}" style="--c:${esc(c.color)}"${type ? ` data-t="${type}"` : ''}>${glyph(c)}</span>`;
+const catIcon = (c, cls = '', type = '') => (plainCats()
+  ? `<span class="cat-ic plain" style="--c:${esc(c.color)}"></span>`
+  : `<span class="cat-ic ${cls}" style="--c:${esc(c.color)}"${type ? ` data-t="${type}"` : ''}>${glyph(c)}</span>`);
 const signed = t => (t.type === 'income' ? t.amount : -t.amount);
 
 /** Paid totals per month: Map<'YYYY-MM', {inc, exp}> */
@@ -189,12 +196,6 @@ function totalsByMonth() {
     map.set(k, e);
   }
   return map;
-}
-
-function openingBalance(ym, totals) {
-  let b = Number(S.data.settings.startBalance) || 0;
-  for (const [k, v] of totals) if (k < ym) b += v.inc - v.exp;
-  return round2(b);
 }
 
 const recurringActive = (r, ym) => r.start <= ym && (!r.end || r.end >= ym) && !(r.skips || []).includes(ym);
@@ -222,14 +223,25 @@ const goalSaved = g => round2((Number(g.initial) || 0) + linkedTotal('goalId', g
 const debtPaid = d => round2((Number(d.initial) || 0) + linkedTotal('debtId', d.id));
 const debtLeft = d => Math.max(0, round2(d.total - debtPaid(d)));
 
-function summary(ym, totals = totalsByMonth()) {
-  const opening = openingBalance(ym, totals);
-  const t = totals.get(ym) || { inc: 0, exp: 0 };
+/**
+ * One month on its own — nothing carries over from earlier months.
+ * In the current month only entries dated up to today count; later-dated ones go to the projection.
+ */
+function summary(ym) {
+  const today = ym === ymNow() ? todayISO() : null;
+  let inc = 0, exp = 0, later = 0;
+  for (const t of S.data.transactions) {
+    if (!t.paid || ymOf(t.date) !== ym) continue;
+    const sign = t.type === 'income' ? 1 : -1;
+    if (today && t.date > today) later += sign * t.amount;
+    else if (sign > 0) inc += t.amount;
+    else exp += t.amount;
+  }
   const pending = pendingFor(ym);
   const pIn = sum(pending.filter(p => p.type === 'income'), p => p.amount);
   const pOut = sum(pending.filter(p => p.type === 'expense'), p => p.amount);
-  const closing = round2(opening + t.inc - t.exp);
-  return { opening, income: round2(t.inc), expense: round2(t.exp), closing, pIn, pOut, projected: round2(closing + pIn - pOut), pending };
+  const balance = round2(inc - exp);
+  return { income: round2(inc), expense: round2(exp), balance, pIn, pOut, later, projected: round2(balance + later + pIn - pOut), pending };
 }
 
 /* ======================================================================
@@ -468,8 +480,7 @@ function render() {
 /* ---------- Month view ---------- */
 
 function viewMonth() {
-  const totals = totalsByMonth();
-  const s = summary(S.month, totals);
+  const s = summary(S.month);
   const txs = S.data.transactions.filter(t => t.paid && ymOf(t.date) === S.month);
   const banner = installBanner() + overdueBanner();
   return `
@@ -501,7 +512,8 @@ function overdueBanner() {
 
 function heroCard(s) {
   const now = ymNow();
-  const label = S.month === now ? 'Balance today' : S.month < now ? 'Closing balance' : 'Balance so far';
+  const label = S.month === now ? 'Balance today' : S.month < now ? 'Month balance' : 'Balance so far';
+  const sub = S.month === now ? `Up to ${dateShort(todayISO())}` : ymLabel(S.month);
   const ratio = s.income > 0 ? Math.min(100, (s.expense / s.income) * 100) : s.expense > 0 ? 100 : 0;
   const saved = s.income - s.expense;
   let foot = 'No income recorded yet this month';
@@ -513,10 +525,10 @@ function heroCard(s) {
     <section class="card hero o1">
       <div class="hero-top">
         <span class="hero-label">${label}</span>
-        <span class="hero-open">Opening ${money(s.opening)}</span>
+        <span class="hero-open">${sub}</span>
       </div>
-      <div class="hero-amount">${moneyBig(s.closing)}</div>
-      <div class="hero-proj">${s.pending.length
+      <div class="hero-amount">${moneyBig(s.balance)}</div>
+      <div class="hero-proj">${s.pending.length || s.later
         ? `Projected end of month <b>${money(s.projected)}</b>`
         : 'Nothing pending — all planned items settled ✓'}</div>
       <div class="hero-stats">
@@ -880,7 +892,7 @@ function viewStats() {
       <div class="grid-2">
         <section class="card span-2">
           <header class="card-head"><h2>Last 12 months</h2>
-            <div class="chart-legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--expense)"></i>Expenses</span><span><i class="line" style="background:var(--accent)"></i>Balance</span></div>
+            <div class="chart-legend"><span><i style="background:var(--income)"></i>Income</span><span><i style="background:var(--expense)"></i>Expenses</span><span><i class="line" style="background:var(--accent)"></i>Net</span></div>
           </header>
           ${box('ch-months', 'tall')}
         </section>
@@ -930,7 +942,7 @@ function drawCharts() {
     callbacks: { label: ctx => ` ${ctx.dataset.label}: ${money(ctx.parsed.y ?? ctx.parsed)}` },
   };
 
-  // 12 months: income/expense bars + closing balance line
+  // 12 months: income/expense bars + monthly net line
   const totals = totalsByMonth();
   const months = Array.from({ length: 12 }, (_, i) => ymAdd(S.month, i - 11));
   const el1 = $('#ch-months');
@@ -939,7 +951,7 @@ function drawCharts() {
       data: {
         labels: months.map(ymShort),
         datasets: [
-          { type: 'line', label: 'Balance', data: months.map(m => round2(openingBalance(m, totals) + ((totals.get(m)?.inc || 0) - (totals.get(m)?.exp || 0)))), borderColor: v('--accent'), backgroundColor: v('--accent'), borderWidth: 2.5, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 5, yAxisID: 'y1', order: 0 },
+          { type: 'line', label: 'Net', data: months.map(m => round2((totals.get(m)?.inc || 0) - (totals.get(m)?.exp || 0))), borderColor: v('--accent'), backgroundColor: v('--accent'), borderWidth: 2.5, cubicInterpolationMode: 'monotone', pointRadius: 0, pointHoverRadius: 5, yAxisID: 'y1', order: 0 },
           { type: 'bar', label: 'Income', data: months.map(m => round2(totals.get(m)?.inc || 0)), backgroundColor: v('--income'), borderRadius: 6, maxBarThickness: 18, order: 1 },
           { type: 'bar', label: 'Expenses', data: months.map(m => round2(totals.get(m)?.exp || 0)), backgroundColor: v('--expense'), borderRadius: 6, maxBarThickness: 18, order: 1 },
         ],
@@ -1028,11 +1040,10 @@ function viewSettings() {
         <div class="set-row"><span class="lbl">Currency symbol<small>Shown after every amount</small></span><input data-setting="currency" value="${esc(st.currency)}" maxlength="6"></div>
         <div class="set-row"><span class="lbl">Decimals<small>Show centavos or not</small></span>
           <select data-setting="decimals"><option value="2" ${st.decimals == 2 ? 'selected' : ''}>1,250.00</option><option value="0" ${st.decimals == 0 ? 'selected' : ''}>1,250</option></select></div>
-        <div class="set-row"><span class="lbl">Starting balance<small>What you had before your first entry</small></span><input data-setting="startBalance" inputmode="decimal" value="${st.startBalance || ''}" placeholder="0.00"></div>
         <div class="set-row"><span class="lbl">Appearance</span>
           <select data-setting="theme">${['auto', 'light', 'dark'].map(t => `<option value="${t}" ${st.theme === t ? 'selected' : ''}>${t === 'auto' ? 'Match device' : t[0].toUpperCase() + t.slice(1)}</option>`).join('')}</select></div>
         <div class="set-row"><span class="lbl">Category icons<small>Letters or emojis on categories</small></span>
-          <select data-setting="iconStyle"><option value="initials" ${st.iconStyle !== 'emoji' ? 'selected' : ''}>Initials (RG)</option><option value="emoji" ${st.iconStyle === 'emoji' ? 'selected' : ''}>Emojis</option></select></div>
+          <select data-setting="iconStyle"><option value="initials" ${!['emoji', 'none'].includes(st.iconStyle) ? 'selected' : ''}>Initials (RG)</option><option value="emoji" ${st.iconStyle === 'emoji' ? 'selected' : ''}>Emojis</option><option value="none" ${st.iconStyle === 'none' ? 'selected' : ''}>Plain text</option></select></div>
       </section>
 
       <section class="card">
@@ -1121,11 +1132,11 @@ function catGrid(type, selected, hideFixed = false) {
   if (!list.length) list = all;
   const more = list.length < all.length
     ? `<button type="button" class="cat-chip cat-new" data-action="cat-all" data-type="${type}"><span><i>…</i>Fixed</span></button>` : '';
-  const sel = list.some(c => c.id === selected) ? selected : list[0]?.id;
+  const sel = [selected, otherCat(type)].find(id => id && list.some(c => c.id === id)) || list[0]?.id;
   return list.map(c => `
     <label class="cat-chip" style="--c:${esc(c.color)}">
       <input type="radio" name="category" value="${esc(c.id)}" ${c.id === sel ? 'checked' : ''} required>
-      <span><i>${glyph(c)}</i>${esc(c.name)}</span>
+      <span>${plainCats() ? '' : `<i>${glyph(c)}</i>`}${esc(c.name)}</span>
     </label>`).join('') +
     more + `<button type="button" class="cat-chip cat-new" data-action="inline-cat" data-type="${type}"><span><i>＋</i>New</span></button>`;
 }
@@ -1168,12 +1179,12 @@ function txForm(t) {
       <input type="hidden" name="id" value="${esc(t.id || '')}">
       ${typeSeg(t.type)}
       ${amountField(t.type, t.amount)}
-      <div class="field"><span class="label">Category</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
       <div class="field-row">
         <label class="field"><span class="label">Date</span><input type="date" name="date" value="${esc(t.date)}" required></label>
         <label class="field"><span class="label">Note</span><input name="note" value="${esc(t.note || '')}" placeholder="Optional" maxlength="80"></label>
       </div>
       <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
+      <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
       ${!isNew && !t.paid && !t.recurringId
         ? `<button type="button" class="btn btn-block" data-action="move-next" data-id="${esc(t.id)}">${ic('next', 18)} Move to ${ymLabel(ymAdd(ymOf(t.date), 1))}</button>` : ''}
       <div class="sheet-actions">

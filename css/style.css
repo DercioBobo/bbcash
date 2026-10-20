@@ -390,6 +390,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .cat-ic.sm { width: 34px; height: 34px; font-size: 17px; border-radius: 11px; }
 
+/* Plain text (Settings → Category icons): a thin colour stripe instead of a tile */
+.cat-ic.plain { width: 4px; height: 32px; border-radius: 4px; background: var(--c, #94a3b8); }
+
 /* Initials instead of emojis (Settings → Category icons) */
 .ini {
   font: 800 13.5px/1 var(--font);
@@ -417,7 +420,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .row-title {
   font-weight: 700;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  line-height: 1.25;
+  /* Wrap long names onto a second line instead of cutting them short */
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+  overflow: hidden; overflow-wrap: anywhere;
 }
 
 .row-sub {
@@ -434,6 +440,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .amt.income { color: var(--income); }
 .amt.expense { color: var(--expense); }
+@media (max-width: 420px) {
+  .row-btn { gap: 10px; padding: 9px 6px; }
+  .row .amt { font-size: 14px; }
+}
+
 .amt.zero { color: var(--muted); font-weight: 600; }
 .amt small { display: block; font-size: 11px; font-weight: 600; color: var(--muted); }
 
@@ -875,6 +886,7 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 
 .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .label { font-size: 12.5px; font-weight: 700; color: var(--muted); }
+.label small { font-weight: 600; opacity: .8; }
 .hint { font-size: 12.5px; color: var(--muted); }
 
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -943,6 +955,7 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   transition: all .12s;
 }
 
+.cat-chip span:not(:has(i)) { justify-content: center; min-height: 44px; font-size: 12.5px; box-shadow: inset 3px 0 0 var(--c); }
 .cat-chip span i { font-style: normal; font-size: 22px; line-height: 1.1; }
 .cat-chip input:checked + span { border-color: var(--c); background: color-mix(in srgb, var(--c) 13%, transparent); color: var(--text); }
 .cat-chip input:focus-visible + span { outline: 2px solid var(--accent); }
