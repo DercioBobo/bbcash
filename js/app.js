@@ -568,6 +568,7 @@ function pendingRow(p) {
 }
 
 function pendingCard(s) {
+  if (!s.pending.length) return '';
   const today = todayISO();
   const groups = [
     { key: 'income', title: 'To receive', icon: 'down', items: s.pending.filter(p => p.type === 'income') },
@@ -592,9 +593,7 @@ function pendingCard(s) {
   }).join('');
 
   const net = round2(s.pIn - s.pOut);
-  const content = s.pending.length
-    ? `${body}<div class="pend-total"><span>If everything happens</span><span class="num ${net >= 0 ? 'pos' : 'neg'}">${money(net, true)}</span></div>`
-    : `<div class="empty small">Nothing pending this month.<br><button class="link" data-action="new-recurring">+ Set up a fixed payment</button></div>`;
+  const content = `${body}<div class="pend-total"><span>If everything happens</span><span class="num ${net >= 0 ? 'pos' : 'neg'}">${money(net, true)}</span></div>`;
 
   return `
     <section class="card o2">
@@ -1161,9 +1160,9 @@ const pickCat = (type, preferred) => (catsOf(type).some(c => c.id === preferred)
 /** Grow the big amount input with its content so the currency sits right beside the number. */
 const amountWidth = text => `${Math.max(1, text.length) + 0.4}ch`;
 
-const amountField = (type, value) => `
+const amountField = (type, value, focus = true) => `
   <label class="amount-field ${type}">
-    <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" value="${value ? round2(value) : ''}" style="width:${amountWidth(value ? String(round2(value)) : '')}" required autofocus aria-label="Amount">
+    <input name="amount" inputmode="decimal" autocomplete="off" placeholder="0" value="${value ? round2(value) : ''}" style="width:${amountWidth(value ? String(round2(value)) : '')}" required ${focus ? 'autofocus' : ''} aria-label="Amount">
     <span class="cur">${esc(S.data.settings.currency)}</span>
   </label>`;
 
@@ -1178,11 +1177,9 @@ function txForm(t) {
     <form class="form" data-form="tx">
       <input type="hidden" name="id" value="${esc(t.id || '')}">
       ${typeSeg(t.type)}
-      ${amountField(t.type, t.amount)}
-      <div class="field-row">
-        <label class="field"><span class="label">Date</span><input type="date" name="date" value="${esc(t.date)}" required></label>
-        <label class="field"><span class="label">Note</span><input name="note" value="${esc(t.note || '')}" placeholder="Optional" maxlength="80"></label>
-      </div>
+      ${amountField(t.type, t.amount, isNew)}
+      <label class="field"><span class="label">Description</span><input name="note" value="${esc(t.note || '')}" placeholder="What is it for? (optional)" maxlength="80" autocomplete="off" enterkeyhint="done"></label>
+      <label class="field"><span class="label">Date</span><input type="date" name="date" value="${esc(t.date)}" required></label>
       <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
       <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
       ${!isNew && !t.paid && !t.recurringId
@@ -1363,7 +1360,7 @@ function debtForm(d) {
         <label class="field"><span class="label">Already paid</span><input name="initial" inputmode="decimal" value="${d.initial || ''}" placeholder="0"></label>
       </div>
       <label class="field"><span class="label">Due (optional)</span>${monthInput('due', d.due)}</label>
-      <label class="field"><span class="label">Note</span><input name="note" value="${esc(d.note || '')}" placeholder="Optional" maxlength="80"></label>
+      <label class="field"><span class="label">Description</span><input name="note" value="${esc(d.note || '')}" placeholder="Optional" maxlength="80"></label>
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-debt" data-id="${esc(d.id)}">${ic('trash', 18)} Delete</button>`}
         <button class="btn btn-primary btn-lg">${isNew ? 'Add debt' : 'Save'}</button>
@@ -1572,7 +1569,7 @@ const ACTIONS = {
   'export-json': () => download(`bbcash-backup-${todayISO()}.json`, JSON.stringify(S.data, null, 2), 'application/json'),
   'export-csv': () => {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Date', 'Type', 'Category', 'Note', 'Amount', 'Status', 'Fixed']];
+    const rows = [['Date', 'Type', 'Category', 'Description', 'Amount', 'Status', 'Fixed']];
     [...S.data.transactions].sort((a, b) => a.date.localeCompare(b.date)).forEach(t =>
       rows.push([t.date, t.type, cat(t.category).name, t.note || '', t.type === 'income' ? t.amount : -t.amount, t.paid ? 'paid' : 'planned', t.recurringId ? 'yes' : '']));
     download(`bbcash-${todayISO()}.csv`, '﻿' + rows.map(r => r.map(q).join(',')).join('\r\n'), 'text/csv');

@@ -925,12 +925,19 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   border: 0; background: none; box-shadow: none !important;
   padding: 0;
   text-align: center;
-  font-size: 44px; font-weight: 800; letter-spacing: -.03em;
+  font-size: 36px; font-weight: 800; letter-spacing: -.03em;
   font-variant-numeric: tabular-nums;
+  outline: none !important;
 }
 
+/* Focus shows as an underline in the entry's colour instead of a box */
+.amount-field { border-bottom: 2px solid transparent; margin: 0 auto; transition: border-color .15s; }
+.amount-field:focus-within { border-color: var(--surface-3); }
+.amount-field.expense:focus-within { border-color: color-mix(in srgb, var(--expense) 45%, transparent); }
+.amount-field.income:focus-within { border-color: color-mix(in srgb, var(--income) 45%, transparent); }
+
 .amount-field input::placeholder { color: var(--surface-3); }
-.amount-field .cur { font-size: 18px; font-weight: 800; color: var(--muted); }
+.amount-field .cur { font-size: 16px; font-weight: 800; color: var(--muted); }
 .amount-field.expense input { color: var(--expense); }
 .amount-field.income input { color: var(--income); }
 
