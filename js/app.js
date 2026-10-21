@@ -89,6 +89,7 @@ const P = {
   target: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
   next: '<path d="M4 12h13M13 6l6 6-6 6"/>',
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
+  chevron: '<path d="m6 9 6 6 6-6"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
 };
 
@@ -1247,6 +1248,15 @@ function catGrid(type, selected, hideFixed = false) {
 /** The new-entry form's grid hides fixed-only categories; every other picker shows them all. */
 const gridHidesFixed = grid => grid?.dataset.hideFixed === '1';
 
+/** Collapsed category picker (entry form): show the chosen category; optionally close the grid. */
+function syncCatPick(close = false) {
+  const pick = $('#cat-pick');
+  if (!pick) return;
+  const c = cat($('input[name="category"]:checked', pick)?.value || '');
+  $('#cat-current', pick).innerHTML = `<i style="--c:${esc(c.color)}"></i>${esc(c.name)}`;
+  if (close) pick.open = false;
+}
+
 /** Small inline editor that replaces the "+ New" chip, so a category can be created mid-entry. */
 function inlineCatEditor(type) {
   return `
@@ -1285,7 +1295,12 @@ function txForm(t) {
       <label class="field"><span class="label">Description</span><input name="note" value="${esc(t.note || '')}" placeholder="What is it for? (optional)" maxlength="80" autocomplete="off" enterkeyhint="done"></label>
       <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
       <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
-      <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span><div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div></div>
+      <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span>
+        <details class="cat-pick" id="cat-pick">
+          <summary><span id="cat-current"></span>${ic('chevron', 18)}</summary>
+          <div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div>
+        </details>
+      </div>
       ${!isNew && !t.paid && !t.recurringId
         ? `<button type="button" class="btn btn-block" data-action="move-next" data-id="${esc(t.id)}">${ic('next', 18)} Move to ${ymLabel(ymAdd(ymOf(t.date), 1))}</button>` : ''}
       <div class="sheet-actions">
@@ -1293,6 +1308,7 @@ function txForm(t) {
         <button class="btn btn-primary btn-lg">${isNew ? 'Add' : 'Save'}</button>
       </div>
     </form>`);
+  syncCatPick();
 }
 
 function payForm(p) {
@@ -1661,6 +1677,7 @@ const ACTIONS = {
     toast(`Category "${name}" added`);
     const grid = box.closest('.cat-grid');
     grid.innerHTML = catGrid(c.type, c.id, gridHidesFixed(grid));
+    syncCatPick(true);
   },
   'cat-all': el => {
     const grid = el.closest('.cat-grid');
@@ -2066,12 +2083,14 @@ document.addEventListener('submit', e => {
 
 document.addEventListener('change', e => {
   const el = e.target;
+  if (el.name === 'category' && el.closest('#cat-pick')) syncCatPick(true);
   if (el.name === 'paid' && $('#tx-date-label')) $('#tx-date-label').textContent = el.checked ? 'Date' : 'Planned date';
   // Switching expense/income inside a form swaps the category list and labels.
   if (el.name === 'type' && el.type === 'radio') {
     const form = el.form;
     const grid = $('#cat-grid', form);
     if (grid) grid.innerHTML = catGrid(el.value, $('input[name="category"]:checked', form)?.value, gridHidesFixed(grid));
+    syncCatPick();
     $('.amount-field', form)?.classList.remove('expense', 'income');
     $('.amount-field', form)?.classList.add(el.value);
     const sw = $('.switch > span', form);

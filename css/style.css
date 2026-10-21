@@ -946,6 +946,23 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   gap: 8px;
 }
 
+/* Entry form: category picker collapsed to one row until tapped */
+.cat-pick summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px;
+  border-radius: 13px; border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-weight: 700; cursor: pointer;
+  list-style: none;
+}
+.cat-pick summary::-webkit-details-marker { display: none; }
+.cat-pick summary span { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
+.cat-pick summary i { width: 4px; height: 20px; border-radius: 4px; background: var(--c); flex: none; }
+.cat-pick summary .ic { color: var(--muted); transition: transform .15s; }
+.cat-pick[open] summary { border-color: var(--accent); }
+.cat-pick[open] summary .ic { transform: rotate(180deg); }
+.cat-pick .cat-grid { margin-top: 10px; }
+
 .cat-chip { position: relative; }
 .cat-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 
