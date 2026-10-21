@@ -890,6 +890,11 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
+/* Entry form: date with the paid toggle beside it */
+.date-paid { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: end; }
+.paid-toggle { align-items: center; }
+.paid-toggle .switch { height: 48px; }
+
 .form { display: flex; flex-direction: column; gap: 16px; }
 
 .seg {
@@ -1086,10 +1091,13 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 
 .sheet-actions { display: flex; gap: 10px; margin-top: 4px; }
 
-/* Keep Add / Save visible at the bottom of the sheet while the form scrolls */
+/* Keep Add / Save visible at the bottom of the sheet while the form scrolls.
+   The panel drops its bottom padding so the bar sits flush with the screen edge
+   (sticky offsets count from inside the padding, which let the form show below it). */
+.sheet-panel:has(.sheet-actions) { padding-bottom: 0; }
 .sheet-panel .sheet-actions {
   position: sticky; bottom: 0; z-index: 2;
-  margin: 4px calc(-1 * var(--pad-x)) calc(-1 * var(--pad-b));
+  margin: 4px calc(-1 * var(--pad-x)) 0;
   padding: 12px var(--pad-x) var(--pad-b);
   background: var(--surface);
   box-shadow: 0 -1px 0 var(--border);

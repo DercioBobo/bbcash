@@ -1202,8 +1202,12 @@ function openSheet(title, body) {
   sheet.hidden = false;
   document.body.classList.add('noscroll');
   requestAnimationFrame(() => requestAnimationFrame(() => sheet.classList.add('open')));
+  // Focus right away, still inside the tap: iOS only opens the keyboard for focus it sees as user-initiated.
   const focus = $('[autofocus]', sheet);
-  if (focus) setTimeout(() => focus.focus({ preventScroll: true }), 60);
+  if (focus) {
+    focus.focus({ preventScroll: true });
+    setTimeout(() => { if (document.activeElement !== focus) focus.focus({ preventScroll: true }); }, 60);
+  }
 }
 
 function closeSheet() {
@@ -1293,9 +1297,12 @@ function txForm(t) {
       ${typeSeg(t.type)}
       ${amountField(t.type, t.amount, isNew)}
       <label class="field"><span class="label">Description</span><input name="note" value="${esc(t.note || '')}" placeholder="What is it for? (optional)" maxlength="80" autocomplete="off" enterkeyhint="done"></label>
-      <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
-      <label class="switch"><span>Already ${t.type === 'income' ? 'received' : 'paid'}<small>Leave off to plan it for later</small></span><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></label>
-      <div class="field"><span class="label">Category${isNew ? '<small> · optional, defaults to Other</small>' : ''}</span>
+      <div class="date-paid">
+        <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
+        <label class="field paid-toggle"><span class="label" id="tx-paid-label">${t.type === 'income' ? 'Received' : 'Paid'}</span>
+          <span class="switch"><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></span></label>
+      </div>
+      <div class="field"><span class="label">Category</span>
         <details class="cat-pick" id="cat-pick">
           <summary><span id="cat-current"></span>${ic('chevron', 18)}</summary>
           <div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div>
@@ -2097,8 +2104,8 @@ document.addEventListener('change', e => {
     syncCatPick();
     $('.amount-field', form)?.classList.remove('expense', 'income');
     $('.amount-field', form)?.classList.add(el.value);
-    const sw = $('.switch > span', form);
-    if (sw) sw.firstChild.textContent = `Already ${el.value === 'income' ? 'received' : 'paid'}`;
+    const paidLabel = $('#tx-paid-label', form);
+    if (paidLabel) paidLabel.textContent = el.value === 'income' ? 'Received' : 'Paid';
   }
   if (el.name === 'ctype' && el.type === 'radio') {
     $('#cat-budget-label').textContent = budgetLabel(el.value);
