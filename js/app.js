@@ -1309,6 +1309,10 @@ function txForm(t) {
       </div>
     </form>`);
   syncCatPick();
+  // Opening the picker: bring the whole grid into view above the Add button.
+  $('#cat-pick')?.addEventListener('toggle', e => {
+    if (e.target.open) e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
 }
 
 function payForm(p) {
@@ -2233,9 +2237,13 @@ document.addEventListener('touchstart', e => {
 document.addEventListener('touchmove', e => {
   if (!sheetDrag) return;
   const dy = e.touches[0].clientY - sheetDrag.y0;
-  if (sheetDrag.dy === 0 && (dy < 0 || (!sheetDrag.fromHead && sheetDrag.panel.scrollTop > 0))) {
-    sheetDrag = null; // scrolling the form up: not a drag
-    return;
+  if (sheetDrag.dy === 0) {
+    if (dy < 0 || (!sheetDrag.fromHead && sheetDrag.panel.scrollTop > 0)) {
+      sheetDrag = null; // scrolling the form up: not a drag
+      return;
+    }
+    // Wait for a clear downward move, or a still finger would block the form from scrolling.
+    if (dy < 4) return;
   }
   if (e.cancelable) e.preventDefault();
   sheetDrag.dy = Math.max(0, dy);

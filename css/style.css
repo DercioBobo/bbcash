@@ -962,6 +962,7 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 .cat-pick[open] summary { border-color: var(--accent); }
 .cat-pick[open] summary .ic { transform: rotate(180deg); }
 .cat-pick .cat-grid { margin-top: 10px; }
+.cat-pick { scroll-margin-bottom: 110px; } /* clear the sticky Add button */
 
 .cat-chip { position: relative; }
 .cat-chip input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
@@ -1059,7 +1060,7 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   background: var(--surface);
   border-radius: 26px 26px 0 0;
   --pad-x: 20px;
-  --pad-b: calc(20px + env(safe-area-inset-bottom));
+  --pad-b: max(14px, env(safe-area-inset-bottom));
   padding: 10px var(--pad-x) var(--pad-b);
   box-shadow: var(--shadow-lg);
   transform: translateY(100%);
