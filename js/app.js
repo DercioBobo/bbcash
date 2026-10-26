@@ -91,6 +91,9 @@ const P = {
   refresh: '<path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+  calc: '<rect x="4" y="2" width="16" height="20" rx="3"/><path d="M8 6h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h4"/>',
+  copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
 };
 
 const ic = (name, size = 20) =>
@@ -115,6 +118,10 @@ const S = {
   seq: 0,
   undo: null,
   charts: [],
+  sel: null,     // Set of entry ids picked on the Month screen to add up; null = not selecting
+  selKey: '',
+  calc: '',      // calculator expression, kept between openings
+  calcPrev: '',  // the expression just solved with "="
 };
 
 const CACHE_KEY = 'bbcash.cache';
@@ -226,7 +233,6 @@ function pendingFor(ym) {
 
 /** Progress = amount already there when created + every linked transaction that is paid. */
 const linkedTotal = (key, id) => sum(S.data.transactions.filter(t => t[key] === id && t.paid), t => t.amount);
-const goalSaved = g => round2((Number(g.initial) || 0) + linkedTotal('goalId', g.id));
 const debtPaid = d => round2((Number(d.initial) || 0) + linkedTotal('debtId', d.id));
 const debtLeft = d => Math.max(0, round2(d.total - debtPaid(d)));
 
@@ -539,7 +545,7 @@ function renderShell() {
       <div class="sidebar-foot">
         <button class="btn btn-sm" id="install-side" data-action="install" ${canInstall() ? '' : 'hidden'}>${ic('download', 16)} Install app</button>
         <span class="sync"></span>
-        <span class="kbd-hint"><kbd>N</kbd> new entry · <kbd>←</kbd><kbd>→</kbd> months</span>
+        <span class="kbd-hint"><kbd>N</kbd> new entry · <kbd>C</kbd> calculator · <kbd>←</kbd><kbd>→</kbd> months</span>
       </div>
     </aside>
     <div class="content">
@@ -551,10 +557,14 @@ function renderShell() {
           <button class="label" data-action="this-month" id="month-label"></button>
           <button class="icon-btn" data-action="next-month" aria-label="Next month">${ic('right')}</button>
         </div>
-        <button class="icon-btn mobile-only" data-action="go" data-view="settings" aria-label="Settings">${ic('settings', 22)}</button>
+        <div class="top-actions">
+          <button class="icon-btn" data-action="calc" aria-label="Calculator" title="Calculator (C)">${ic('calc', 22)}</button>
+          <button class="icon-btn mobile-only" data-action="go" data-view="settings" aria-label="Settings">${ic('settings', 22)}</button>
+        </div>
       </header>
       <main id="main"></main>
     </div>
+    <div class="selbar" id="selbar" role="status" aria-live="polite" hidden></div>
     <nav class="tabbar">
       ${tab('month')}${tab('fixed')}
       <div class="fab-wrap"><button class="fab" data-action="add" aria-label="New entry">${ic('plus', 26)}</button></div>
@@ -581,9 +591,14 @@ function render() {
   $('#month-label').innerHTML = `${ymLabel(S.month)}${isNow ? '' : '<small>Back to today</small>'}`;
   $$('[data-action="go"]').forEach(b => b.classList.toggle('active', b.dataset.view === S.view));
 
+  // A selection belongs to one month on the Month screen: leaving it clears it.
+  if (S.selKey !== S.view + S.month) { S.sel = null; S.selKey = S.view + S.month; }
+  if (S.sel) { const pool = selPool(); for (const id of S.sel) if (!pool.has(id)) S.sel.delete(id); }
+
   $('#main').innerHTML = { month: viewMonth, fixed: viewFixed, goals: viewGoals, stats: viewStats, settings: viewSettings }[S.view]();
   if (S.view === 'stats') drawCharts();
   updateSync();
+  updateSelBar();
 }
 
 /* ---------- Month view ---------- */
@@ -653,7 +668,7 @@ function pendingRow(p) {
   const move = isFixed(p) ? '' :
     `<button class="icon-btn move" data-action="move-next" data-id="${p.id}" title="Move to ${ymLabel(ymAdd(ymOf(p.date), 1))}" aria-label="Move ${esc(p.note || c.name)} to next month">${ic('next', 17)}</button>`;
   return `
-    <li class="row pend">
+    <li class="row pend${selClass(p.id)}" data-sel="${esc(p.id)}">
       <button class="check ${p.type}" data-action="quickpay" data-id="${p.id}" aria-label="Mark ${esc(p.note || c.name)} as ${p.type === 'income' ? 'received' : 'paid'}">${ic('check', 15)}</button>
       <button class="row-btn" data-action="open-pending" data-id="${p.id}">
         ${catIcon(c, '', p.type)}
@@ -697,7 +712,7 @@ function pendingCard(s) {
 
   return `
     <section class="card o2">
-      <header class="card-head"><h2>Upcoming &amp; unpaid</h2>${s.pending.length ? `<span class="pill ${s.pending.some(p => p.date < today) ? 'warn' : ''}">${s.pending.length}</span>` : ''}</header>
+      <header class="card-head"><h2>Upcoming &amp; unpaid</h2><span class="head-end">${selBtn()}<span class="pill ${s.pending.some(p => p.date < today) ? 'warn' : ''}">${s.pending.length}</span></span></header>
       ${content}
     </section>`;
 }
@@ -741,7 +756,7 @@ function txCard(txs) {
   const exp = txs.filter(t => t.type === 'expense');
   return `
     <section class="card o4">
-      <header class="card-head"><h2>Transactions</h2><span class="sub">${txs.length} this month</span></header>
+      <header class="card-head"><h2>Transactions</h2><span class="head-end"><span class="sub">${txs.length} this month</span>${txs.length ? selBtn() : ''}</span></header>
       <div class="inout">
         <div class="inout-box income"><span class="inout-ic">${ic('down', 14)}</span><span><small>Money in · ${inc.length}</small><b class="num">${inc.length ? '+' : ''}${fmtNumber(sum(inc, t => t.amount))}</b></span></div>
         <div class="inout-box expense"><span class="inout-ic">${ic('up', 14)}</span><span><small>Money out · ${exp.length}</small><b class="num">${exp.length ? '−' : ''}${fmtNumber(sum(exp, t => t.amount))}</b></span></div>
@@ -775,7 +790,7 @@ function txListInner(txs) {
     for (const t of items) {
       const c = cat(t.category);
       html += `
-        <li class="tx ${t.type}"><button class="row-btn" data-action="edit-tx" data-id="${t.id}">
+        <li class="tx ${t.type}${selClass(t.id)}" data-sel="${esc(t.id)}"><button class="row-btn" data-action="edit-tx" data-id="${t.id}">
           ${catIcon(c, '', t.type)}
           <span class="row-text">
             <span class="row-title">${esc(t.note || c.name)}</span>
@@ -787,6 +802,58 @@ function txListInner(txs) {
     html += '</ul>';
   }
   return html;
+}
+
+/* ---------- select entries to add them up ---------- */
+// Long-press a row (or right-click / Ctrl+click on a computer), or tap "Select", then tap rows.
+
+/** Everything selectable this month: id → signed amount (income +, expense −). */
+const selPool = () => new Map([...pendingFor(S.month), ...S.data.transactions.filter(t => t.paid && ymOf(t.date) === S.month)].map(t => [t.id, signed(t)]));
+const selClass = id => (S.sel?.has(id) ? ' sel' : '');
+const selBtn = () => `<button class="link sm" data-action="sel-start">${S.sel ? 'Done' : 'Select'}</button>`;
+
+function selToggle(id) {
+  S.sel = S.sel || new Set();
+  if (S.sel.has(id)) S.sel.delete(id); else S.sel.add(id);
+  updateSelBar();
+}
+
+function selEnd() {
+  S.sel = null;
+  updateSelBar();
+}
+
+/** Selected amounts; when they're all expenses (or all income) they add up as positive numbers. */
+function selValues() {
+  const pool = selPool();
+  const vals = [...(S.sel || [])].map(id => pool.get(id)).filter(v => v != null);
+  const mixed = vals.some(v => v > 0) && vals.some(v => v < 0);
+  return { vals: mixed ? vals : vals.map(Math.abs), mixed };
+}
+
+function updateSelBar() {
+  const bar = $('#selbar');
+  if (!bar) return;
+  $$('[data-sel]').forEach(el => el.classList.toggle('sel', !!S.sel?.has(el.dataset.sel)));
+  $$('[data-action="sel-start"]').forEach(b => { b.textContent = S.sel ? 'Done' : 'Select'; });
+  document.body.classList.toggle('selecting', !!S.sel);
+  bar.hidden = !S.sel;
+  if (!S.sel) return;
+  const { vals, mixed } = selValues();
+  const close = `<button class="icon-btn" data-action="sel-end" aria-label="Stop selecting">${ic('x', 18)}</button>`;
+  if (!vals.length) {
+    bar.innerHTML = `<span class="selbar-text"><small>Select</small><b>Tap entries to add them up</b></span>${close}`;
+    return;
+  }
+  const inc = sum(vals.filter(v => v > 0));
+  const out = sum(vals.filter(v => v < 0), v => -v);
+  bar.innerHTML = `
+    <span class="selbar-text">
+      <small>${vals.length} selected${mixed ? ` · in ${fmtNumber(inc)} · out ${fmtNumber(out)}` : ''}</small>
+      <b class="num">${money(sum(vals), mixed)}</b>
+    </span>
+    <button class="btn btn-sm" data-action="sel-calc">${ic('calc', 16)} Calc</button>
+    ${close}`;
 }
 
 /* ---------- Fixed payments view ---------- */
@@ -845,13 +912,6 @@ function viewFixed() {
 
 /* ---------- Goals & debts view ---------- */
 
-/** Months from now until a target month (inclusive), for "per month needed". */
-const monthsUntil = ym => {
-  const [y1, m1] = ymNow().split('-').map(Number);
-  const [y2, m2] = ym.split('-').map(Number);
-  return (y2 - y1) * 12 + (m2 - m1) + 1;
-};
-
 function progressRow({ id, icon, color, name, done, total, left, sub, editAction, addAction, addLabel, doneLabel }) {
   const pct = total > 0 ? Math.min(100, (done / total) * 100) : 0;
   const finished = left <= 0;
@@ -870,24 +930,34 @@ function progressRow({ id, icon, color, name, done, total, left, sub, editAction
     </div>`;
 }
 
+/** A goal is a one-off thing to buy, often without a price yet. "To Oct" turns it into a planned expense this month. */
+function goalRow(g) {
+  const hasPrice = Number(g.target) > 0;
+  const subs = [];
+  if (!hasPrice) subs.push('<span class="tag">No price yet</span>');
+  if (g.deadline) subs.push(g.deadline < ymNow() ? `<span class="tag red">Was for ${ymLabel(g.deadline)}</span>` : `For ${ymLabel(g.deadline)}`);
+  return `
+    <div class="goal" style="--c:${esc(g.color)}">
+      <div class="goal-top">
+        <button class="row-btn" data-action="edit-goal" data-id="${esc(g.id)}">
+          ${catIcon({ icon: g.icon, color: g.color, name: g.name })}
+          <span class="row-text"><span class="row-title">${esc(g.name)}</span>${subs.length ? `<span class="row-sub">${subs.join(' ')}</span>` : ''}</span>
+          <span class="amt ${hasPrice ? '' : 'zero'}">${hasPrice ? money(g.target) : '—'}</span>
+        </button>
+        <button class="btn btn-sm" data-action="goal-move" data-id="${esc(g.id)}" title="Add to ${ymLabel(ymNow())} as a planned expense">${ic('next', 16)} ${MONTHS[Number(ymNow().slice(5)) - 1].slice(0, 3)}</button>
+      </div>
+    </div>`;
+}
+
 function viewGoals() {
   const { goals, debts } = S.data;
   const owe = debts.filter(d => d.type !== 'lent');
   const lent = debts.filter(d => d.type === 'lent');
-  const goalsLeft = sum(goals, g => Math.max(0, g.target - goalSaved(g)));
+  const noPrice = goals.filter(g => !(Number(g.target) > 0)).length;
 
   const goalRows = [...goals]
-    .sort((a, b) => (goalSaved(a) >= a.target) - (goalSaved(b) >= b.target) || (a.deadline || '9999').localeCompare(b.deadline || '9999'))
-    .map(g => {
-      const saved = goalSaved(g);
-      const left = Math.max(0, round2(g.target - saved));
-      let sub = '';
-      if (g.deadline && left > 0) {
-        const n = monthsUntil(g.deadline);
-        sub = n > 0 ? `Save <b>${money(left / n)}</b> a month to reach it by ${ymLabel(g.deadline)}` : `<span class="tag red">Target date ${ymLabel(g.deadline)} passed</span>`;
-      }
-      return progressRow({ id: g.id, icon: g.icon, color: g.color, name: g.name, done: saved, total: g.target, left, sub, editAction: 'edit-goal', addAction: 'goal-add', addLabel: '+ Add', doneLabel: deco('🎉 ') + 'Reached' });
-    }).join('');
+    .sort((a, b) => (a.deadline || '9999').localeCompare(b.deadline || '9999') || (a.created || 0) - (b.created || 0))
+    .map(goalRow).join('');
 
   const debtRows = list => list
     .sort((a, b) => (debtLeft(a) === 0) - (debtLeft(b) === 0) || debtLeft(b) - debtLeft(a))
@@ -908,7 +978,7 @@ function viewGoals() {
       <div class="sum-grid">
         <div class="sum out"><small>You owe</small><b>${money(sum(owe, debtLeft))}</b></div>
         <div class="sum in"><small>Owed to you</small><b>${money(sum(lent, debtLeft))}</b></div>
-        <div class="sum accent"><small>Still to save for goals</small><b>${money(goalsLeft)}</b></div>
+        <div class="sum accent"><small>Goals${noPrice ? ` · ${noPrice} without price` : ''}</small><b>${money(sum(goals, g => Number(g.target) || 0))}</b></div>
       </div>
       <div class="btn-row">
         <button class="btn btn-primary" data-action="new-goal">${ic('plus', 18)} New goal</button>
@@ -917,7 +987,7 @@ function viewGoals() {
       <div class="grid-2">
         <section class="card">
           <header class="card-head"><h2>Goals</h2><span class="pill">${goals.length}</span></header>
-          ${goals.length ? goalRows : empty('🎯', 'Saving for a car, a MacBook, a trip? Add a goal and track how close you are.', 'new-goal', '+ Add a goal')}
+          ${goals.length ? goalRows : empty('🎯', 'Things you want or need to buy — a MacBook, new tyres, a sofa. Add them even without a price, then move them to the month you buy them.', 'new-goal', '+ Add a goal')}
         </section>
         <div class="stack">
           <section class="card">
@@ -927,7 +997,7 @@ function viewGoals() {
           ${lent.length ? `<section class="card"><header class="card-head"><h2>Owed to me</h2><span class="pill">${lent.length}</span></header>${debtRows(lent)}</section>` : ''}
         </div>
       </div>
-      <p class="hint">Adding money to a goal or recording a debt payment also adds an entry to that month's cashflow, so your balance stays accurate. Delete that entry to undo it.</p>
+      <p class="hint">Moving a goal to this month adds it as a planned expense, ready to tick off when you buy it. Recording a debt payment also adds an entry to that month's cashflow, so your balance stays accurate. Delete that entry to undo it.</p>
     </div>`;
 }
 
@@ -1460,7 +1530,7 @@ const monthInput = (name, value) =>
 
 function goalForm(g) {
   const isNew = !g;
-  g = g || { name: '', icon: '🎯', color: COLORS[Math.floor(Math.random() * COLORS.length)], target: '', initial: 0, deadline: '' };
+  g = g || { name: '', icon: '🎯', color: COLORS[Math.floor(Math.random() * COLORS.length)], target: '', deadline: '' };
   openSheet(isNew ? 'New goal' : 'Edit goal', `
     <form class="form" data-form="goal">
       <input type="hidden" name="id" value="${esc(g.id || '')}">
@@ -1468,16 +1538,16 @@ function goalForm(g) {
         ${useEmoji()
           ? `<label class="field"><span class="label">Icon</span><input name="icon" value="${esc(g.icon)}" maxlength="8" style="text-align:center;font-size:22px;padding:8px" required></label>`
           : `<input type="hidden" name="icon" value="${esc(g.icon)}">`}
-        <label class="field"><span class="label">What are you saving for?</span><input name="name" value="${esc(g.name)}" placeholder="e.g. MacBook, Car, Holiday" required maxlength="50" autofocus></label>
+        <label class="field"><span class="label">What do you want or need?</span><input name="name" value="${esc(g.name)}" placeholder="e.g. MacBook, New tyres, Sofa" required maxlength="50" autofocus></label>
       </div>
       ${useEmoji() ? `<div class="emoji-pick">${GOAL_EMOJIS.map(e => `<button type="button" data-action="pick-emoji" data-emoji="${e}">${e}</button>`).join('')}</div>` : ''}
       <div class="field-row">
-        <label class="field"><span class="label">Target (${esc(S.data.settings.currency)})</span><input name="target" inputmode="decimal" value="${g.target || ''}" required></label>
-        <label class="field"><span class="label">Already saved</span><input name="initial" inputmode="decimal" value="${g.initial || ''}" placeholder="0"></label>
+        <label class="field"><span class="label">Price (${esc(S.data.settings.currency)})</span><input name="target" inputmode="decimal" value="${g.target || ''}" placeholder="Not known yet"></label>
+        <label class="field"><span class="label">When (optional)</span>${monthInput('deadline', g.deadline)}</label>
       </div>
-      <label class="field"><span class="label">Target date (optional)</span>${monthInput('deadline', g.deadline)}<span class="hint">Shows how much to put aside each month.</span></label>
       <div class="field"><span class="label">Color</span><input type="hidden" name="color" value="${esc(g.color)}">
         <div class="swatches">${COLORS.map(x => `<button type="button" class="${x === g.color ? 'sel' : ''}" style="--c:${x}" data-action="pick-color" data-color="${x}" aria-label="${x}"></button>`).join('')}</div></div>
+      ${isNew ? '' : `<button type="button" class="btn btn-block" data-action="goal-move" data-id="${esc(g.id)}">${ic('next', 18)} Move to ${ymLabel(ymNow())}</button>`}
       <div class="sheet-actions">
         ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-goal" data-id="${esc(g.id)}">${ic('trash', 18)} Delete</button>`}
         <button class="btn btn-primary btn-lg">${isNew ? 'Create goal' : 'Save'}</button>
@@ -1509,23 +1579,161 @@ function debtForm(d) {
     </form>`);
 }
 
-/** Shared sheet for "add money to goal" and "pay / receive a debt": both create a linked transaction. */
-function linkedPayForm(kind, item) {
-  const isGoal = kind === 'goal';
-  const left = isGoal ? Math.max(0, round2(item.target - goalSaved(item))) : debtLeft(item);
-  const income = !isGoal && item.type === 'lent';
-  const title = isGoal ? `Add to ${item.name}` : income ? `Received from ${item.name}` : `Pay ${item.name}`;
-  openSheet(title, `
-    <form class="form" data-form="linked-pay">
-      <input type="hidden" name="kind" value="${kind}">
+/** "Pay / receive a debt": creates a linked transaction. */
+function debtPayForm(item) {
+  const left = debtLeft(item);
+  const income = item.type === 'lent';
+  openSheet(income ? `Received from ${item.name}` : `Pay ${item.name}`, `
+    <form class="form" data-form="debt-pay">
       <input type="hidden" name="id" value="${esc(item.id)}">
-      <p class="hint" style="text-align:center">${money(left)} ${isGoal ? 'still to save' : 'remaining'}</p>
-      ${amountField(income ? 'income' : 'expense', isGoal ? '' : left)}
+      <p class="hint" style="text-align:center">${money(left)} remaining</p>
+      ${amountField(income ? 'income' : 'expense', left)}
       <div class="field"><span class="label">Category in cashflow</span>
-        <div class="cat-grid" id="cat-grid">${catGrid(income ? 'income' : 'expense', pickCat(income ? 'income' : 'expense', isGoal ? 'savings' : income ? 'other-in' : 'debt'))}</div></div>
+        <div class="cat-grid" id="cat-grid">${catGrid(income ? 'income' : 'expense', pickCat(income ? 'income' : 'expense', income ? 'other-in' : 'debt'))}</div></div>
       <label class="field"><span class="label">Date</span><input type="date" name="date" value="${todayISO()}" required></label>
-      <button class="btn btn-primary btn-lg btn-block">${ic('check')} ${isGoal ? 'Add to goal' : income ? 'Record payment received' : 'Record payment'}</button>
+      <button class="btn btn-primary btn-lg btn-block">${ic('check')} ${income ? 'Record payment received' : 'Record payment'}</button>
     </form>`);
+}
+
+/** Moving a goal that has no price yet: ask for it first. */
+function goalMoveForm(g) {
+  const ym = ymNow();
+  openSheet(`Move to ${ymLabel(ym)}`, `
+    <form class="form" data-form="goal-move">
+      <input type="hidden" name="id" value="${esc(g.id)}">
+      <p class="hint" style="text-align:center">How much is <b>${esc(g.name)}</b>? It's added to ${ymLabel(ym)} as a planned expense.</p>
+      ${amountField('expense', '')}
+      <button class="btn btn-primary btn-lg btn-block">${ic('next')} Add to ${ymLabel(ym)}</button>
+    </form>`);
+}
+
+/* ---------- calculator ---------- */
+
+/**
+ * Work out "12.5+3*(4-1)" without eval. "a+b%" adds b percent of a (1000+15% = 1150), like a phone calculator.
+ * Returns NaN when the expression is incomplete or invalid.
+ */
+function calcEval(src) {
+  const toks = String(src).match(/\d+\.?\d*|\.\d+|[-+*/()%]/g) || [];
+  if (toks.join('') !== String(src).replace(/\s+/g, '')) return NaN;
+  let i = 0;
+  const factor = () => {
+    const t = toks[i++];
+    if (t === '-' || t === '+') { const f = factor(); return { v: t === '-' ? -f.v : f.v, pct: f.pct }; }
+    let v;
+    if (t === '(') { v = expr(); if (toks[i++] !== ')') return { v: NaN }; } else v = Number(t);
+    if (toks[i] === '%') { i++; return { v: v / 100, pct: true }; }
+    return { v, pct: false };
+  };
+  const term = () => {
+    let f = factor();
+    while (toks[i] === '*' || toks[i] === '/') {
+      const op = toks[i++];
+      const r = factor().v;
+      f = { v: op === '*' ? f.v * r : f.v / r, pct: false };
+    }
+    return f;
+  };
+  function expr() {
+    let v = term().v;
+    while (toks[i] === '+' || toks[i] === '-') {
+      const op = toks[i++];
+      const t = term();
+      const r = t.pct ? v * t.v : t.v;
+      v = op === '+' ? v + r : v - r;
+    }
+    return v;
+  }
+  const v = expr();
+  return i === toks.length && Number.isFinite(v) ? Math.round(v * 1e8) / 1e8 : NaN;
+}
+
+/** Live result while typing: ignore a trailing operator and close any open brackets. */
+function calcValue(expr = S.calc) {
+  const open = (expr.match(/\(/g) || []).length - (expr.match(/\)/g) || []).length;
+  return calcEval(expr.replace(/[-+*/(]+$/, '') + ')'.repeat(Math.max(0, open)));
+}
+
+const calcFmt = v => new Intl.NumberFormat('en-US', { maximumFractionDigits: 8 }).format(v);
+const calcPretty = expr => esc(expr)
+  .replace(/(\d+)(\.\d*)?/g, (m, int, dec = '') => Number(int).toLocaleString('en-US') + dec)
+  .replace(/[-+*/]/g, op => ` ${{ '-': '−', '+': '+', '*': '×', '/': '÷' }[op]} `);
+
+const CALC_KEYS = [
+  ['clear', 'C', 'fn'], ['back', '⌫', 'fn'], ['%', '%', 'fn'], ['/', '÷', 'op'],
+  ['7', '7'], ['8', '8'], ['9', '9'], ['*', '×', 'op'],
+  ['4', '4'], ['5', '5'], ['6', '6'], ['-', '−', 'op'],
+  ['1', '1'], ['2', '2'], ['3', '3'], ['+', '+', 'op'],
+  ['0', '0', 'wide'], ['.', '.'], ['=', '=', 'eq'],
+];
+
+function calcSheet() {
+  openSheet('Calculator', `
+    <div class="calc" id="calc">
+      <div class="calc-screen">
+        <div class="calc-expr" id="calc-expr"></div>
+        <div class="calc-res num" id="calc-res"></div>
+      </div>
+      <div class="calc-keys">${CALC_KEYS.map(([k, label, cls = '']) =>
+        `<button type="button" class="calc-key ${cls}" data-action="calc-key" data-k="${k}" aria-label="${k === 'back' ? 'Delete' : k === 'clear' ? 'Clear' : label}">${label}</button>`).join('')}</div>
+      <div class="btn-row calc-actions">
+        <button type="button" class="btn" data-action="calc-copy">${ic('copy', 18)} Copy</button>
+        <button type="button" class="btn btn-primary" data-action="calc-use">${ic('plus', 18)} New entry</button>
+      </div>
+    </div>`);
+  updateCalc();
+}
+
+function updateCalc() {
+  const exprEl = $('#calc-expr');
+  if (!exprEl) return;
+  const v = calcValue();
+  exprEl.innerHTML = S.calcPrev ? `${calcPretty(S.calcPrev)} =` : calcPretty(S.calc) || '&nbsp;';
+  $('#calc-res').textContent = Number.isNaN(v) ? (S.calc ? '…' : '0') : calcFmt(v);
+}
+
+function calcPress(k) {
+  let e = S.calc;
+  const last = e.slice(-1);
+  const isOp = c => '+-*/'.includes(c) && c !== '';
+  // After "=", a number starts over; an operator carries on from the result.
+  if (S.calcPrev && (/[\d.(]/.test(k))) e = '';
+  S.calcPrev = '';
+  if (/\d/.test(k)) {
+    if (last === ')' || last === '%') e += '*';
+    e += k;
+  } else if (k === '.') {
+    const num = e.match(/[\d.]*$/)[0];
+    if (!num.includes('.')) e += num ? '.' : (last === ')' || last === '%' ? '*0.' : '0.');
+  } else if (isOp(k)) {
+    if (!e) e = k === '-' ? '-' : '';
+    else if (isOp(last)) e = (k === '-' && '*/'.includes(last)) ? e + k : e.replace(/[-+*/]+$/, '') + k;
+    else if (last === '(') e += k === '-' ? '-' : '';
+    else e += k;
+  } else if (k === '%') {
+    if (/[\d)]/.test(last)) e += '%';
+  } else if (k === '(') {
+    if (/[\d)%]/.test(last)) e += '*';
+    e += '(';
+  } else if (k === ')') {
+    const open = (e.match(/\(/g) || []).length - (e.match(/\)/g) || []).length;
+    if (open > 0 && /[\d)%]/.test(last)) e += ')';
+  } else if (k === 'back') {
+    e = e.slice(0, -1);
+  } else if (k === 'clear') {
+    e = '';
+  } else if (k === '=') {
+    const v = calcValue(e);
+    if (!Number.isNaN(v) && e && String(v) !== e) { S.calcPrev = e; e = String(v); }
+  }
+  S.calc = e;
+  updateCalc();
+}
+
+/** Keyboard → calculator key, or null. */
+function calcKeyOf(key) {
+  if (/^[\d.+\-*/%()]$/.test(key)) return key;
+  return { ',': '.', x: '*', X: '*', '×': '*', '÷': '/', Enter: '=', '=': '=', Backspace: 'back', Delete: 'clear', c: 'clear', C: 'clear' }[key] || null;
 }
 
 /* ======================================================================
@@ -1544,6 +1752,18 @@ function payPending(p, amount, date) {
   mutate(d => d.transactions.push({
     id: uid(), created: Date.now(), type: p.type, amount, category: p.category, note: p.note, date, paid: true, recurringId: p.rid,
   }), `${p.note} ${p.type === 'income' ? 'received' : 'paid'}`);
+}
+
+/** A goal becomes a planned expense this month (ticked off later from the Month list) and leaves the goals list. */
+function moveGoal(g, amount) {
+  const ym = ymNow();
+  mutate(d => {
+    d.goals = d.goals.filter(x => x.id !== g.id);
+    d.transactions.push({
+      id: uid(), created: Date.now(), type: 'expense', amount, category: otherCat('expense'),
+      note: g.name, date: todayISO(), paid: false, recurringId: null, goalId: g.id,
+    });
+  }, `${g.name} added to ${ymLabel(ym)}`);
 }
 
 /** Push unpaid one-off entries one month later, keeping the day (clamped to the month's length). */
@@ -1702,7 +1922,13 @@ const ACTIONS = {
   },
   'new-goal': () => goalForm(),
   'edit-goal': el => goalForm(S.data.goals.find(g => g.id === el.dataset.id)),
-  'goal-add': el => linkedPayForm('goal', S.data.goals.find(g => g.id === el.dataset.id)),
+  'goal-move': el => {
+    const g = S.data.goals.find(x => x.id === el.dataset.id);
+    // From the edit sheet, use the price as typed there, even if not saved yet.
+    const form = el.closest('form[data-form="goal"]');
+    const price = form ? parseAmount(form.target.value) : Number(g.target);
+    if (price > 0) { closeSheet(); moveGoal(g, price); } else goalMoveForm(g);
+  },
   'delete-goal': el => {
     const g = S.data.goals.find(x => x.id === el.dataset.id);
     if (!confirm(`Delete the goal "${g.name}"? Money already added stays in your cashflow history.`)) return;
@@ -1711,12 +1937,37 @@ const ACTIONS = {
   },
   'new-debt': () => debtForm(),
   'edit-debt': el => debtForm(S.data.debts.find(x => x.id === el.dataset.id)),
-  'debt-pay': el => linkedPayForm('debt', S.data.debts.find(x => x.id === el.dataset.id)),
+  'debt-pay': el => debtPayForm(S.data.debts.find(x => x.id === el.dataset.id)),
   'delete-debt': el => {
     const debt = S.data.debts.find(x => x.id === el.dataset.id);
     if (!confirm(`Delete "${debt.name}"? Payments already made stay in your cashflow history.`)) return;
     closeSheet();
     mutate(d => { d.debts = d.debts.filter(x => x.id !== debt.id); }, 'Debt deleted');
+  },
+  calc: calcSheet,
+  'calc-key': el => calcPress(el.dataset.k),
+  'calc-copy': () => {
+    const v = calcValue();
+    if (Number.isNaN(v)) return;
+    navigator.clipboard?.writeText(String(v)).then(() => toast(`Copied ${calcFmt(v)}`), () => toast('Could not copy'));
+  },
+  'calc-use': () => {
+    const v = round2(Math.abs(calcValue()));
+    txForm();
+    const input = $('#sheet [name="amount"]');
+    if (input && v > 0) { input.value = String(v); input.style.width = amountWidth(input.value); }
+  },
+  'sel-start': () => {
+    if (S.sel) return selEnd();
+    S.sel = new Set();
+    updateSelBar();
+  },
+  'sel-end': selEnd,
+  'sel-calc': () => {
+    const { vals } = selValues();
+    S.calc = vals.map((v, i) => (v < 0 ? '-' : i ? '+' : '') + Math.abs(v)).join('');
+    S.calcPrev = '';
+    calcSheet();
   },
   undo: () => { const fn = S.undo; hideToast(); if (fn) fn(); },
   'export-json': () => download(`bbcash-backup-${todayISO()}.json`, JSON.stringify(S.data, null, 2), 'application/json'),
@@ -1789,12 +2040,11 @@ const FORMS = {
   },
 
   goal(form, fd) {
-    const target = parseAmount(fd.get('target'));
-    if (!(target > 0)) return invalid(form, 'target');
     const id = fd.get('id');
+    // Price is optional: many goals are tracked before you know what they cost.
     const g = {
       name: fd.get('name').trim(), icon: fd.get('icon').trim() || '🎯', color: fd.get('color'),
-      target, initial: parseAmount(fd.get('initial')) || 0, deadline: fd.get('deadline') || null,
+      target: parseAmount(fd.get('target')) || 0, deadline: fd.get('deadline') || null,
     };
     closeSheet();
     if (id) mutate(d => Object.assign(d.goals.find(x => x.id === id), g), 'Goal saved');
@@ -1814,24 +2064,26 @@ const FORMS = {
     else mutate(d => d.debts.push({ id: uid(), created: Date.now(), ...debt }), 'Debt added');
   },
 
-  'linked-pay'(form, fd) {
+  'debt-pay'(form, fd) {
     const amount = parseAmount(fd.get('amount'));
     if (!(amount > 0)) return invalid(form, 'amount');
     const id = fd.get('id');
-    const date = fd.get('date');
-    const base = { id: uid(), created: Date.now(), amount, date, paid: true, recurringId: null };
+    const debt = S.data.debts.find(x => x.id === id);
+    const lent = debt.type === 'lent';
     closeSheet();
-    if (fd.get('kind') === 'goal') {
-      const g = S.data.goals.find(x => x.id === id);
-      mutate(d => d.transactions.push({ ...base, type: 'expense', category: fd.get('category'), note: g.name, goalId: id }), `${money(amount)} added to ${g.name}`);
-    } else {
-      const debt = S.data.debts.find(x => x.id === id);
-      const lent = debt.type === 'lent';
-      mutate(d => d.transactions.push({
-        ...base, type: lent ? 'income' : 'expense', category: fd.get('category'),
-        note: lent ? `${debt.name} (repaid)` : `${debt.name} (debt)`, debtId: id,
-      }), lent ? 'Payment received' : 'Payment recorded');
-    }
+    mutate(d => d.transactions.push({
+      id: uid(), created: Date.now(), amount, date: fd.get('date'), paid: true, recurringId: null,
+      type: lent ? 'income' : 'expense', category: fd.get('category'),
+      note: lent ? `${debt.name} (repaid)` : `${debt.name} (debt)`, debtId: id,
+    }), lent ? 'Payment received' : 'Payment recorded');
+  },
+
+  'goal-move'(form, fd) {
+    const amount = parseAmount(fd.get('amount'));
+    if (!(amount > 0)) return invalid(form, 'amount');
+    const g = S.data.goals.find(x => x.id === fd.get('id'));
+    closeSheet();
+    if (g) moveGoal(g, amount);
   },
 
   async password(form, fd) {
@@ -2079,6 +2331,13 @@ async function boot() {
 /* ---------- global listeners ---------- */
 
 document.addEventListener('click', e => {
+  // While selecting (or with Ctrl/Cmd held), tapping a Month row picks it instead of opening it.
+  const row = e.target.closest('[data-sel]');
+  if (row && (S.sel || e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    if (Date.now() - lastPress > 600) selToggle(row.dataset.sel); // skip the click that ends a long-press
+    return;
+  }
   const el = e.target.closest('[data-action]');
   if (!el) return;
   const fn = ACTIONS[el.dataset.action];
@@ -2160,14 +2419,72 @@ document.addEventListener('keydown', e => {
     $('[data-action="ov-add"]', e.target.closest('.ov-add')).click();
     return;
   }
-  if (e.key === 'Escape') { closeSheet(); return; }
+  if (e.key === 'Escape') {
+    if ($('#sheet').hidden && S.sel) selEnd(); else closeSheet();
+    return;
+  }
+  if ($('#calc') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    const k = calcKeyOf(e.key);
+    if (k) { e.preventDefault(); calcPress(k); }
+    return;
+  }
   if (!S.data || !$('#sheet').hidden || $('#app').hidden) return;
   if (e.target.matches('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === 'n' || e.key === 'N') { e.preventDefault(); txForm(); }
+  if (e.key === 'c' || e.key === 'C') { e.preventDefault(); calcSheet(); }
   if (S.view === 'month' || S.view === 'stats') {
     if (e.key === 'ArrowLeft') ACTIONS['prev-month']();
     if (e.key === 'ArrowRight') ACTIONS['next-month']();
   }
+});
+
+/* ---------- long-press a Month row to start selecting ---------- */
+
+let press = null;
+let lastPress = 0;
+
+document.addEventListener('touchstart', e => {
+  const row = e.target.closest?.('[data-sel]');
+  if (!row || e.touches.length !== 1) return;
+  const { clientX: x, clientY: y } = e.touches[0];
+  const p = press = {
+    x, y, fired: false,
+    timer: setTimeout(() => {
+      p.fired = true;
+      lastPress = Date.now();
+      navigator.vibrate?.(12);
+      selToggle(row.dataset.sel);
+    }, 450),
+  };
+}, { passive: true });
+
+document.addEventListener('touchmove', e => {
+  if (press && !press.fired && Math.hypot(e.touches[0].clientX - press.x, e.touches[0].clientY - press.y) > 10) {
+    clearTimeout(press.timer);
+    press = null;
+  }
+}, { passive: true });
+
+function endPress(e) {
+  if (!press) return;
+  clearTimeout(press.timer);
+  // The finger lifting after a long-press must not also open (or un-select) the row.
+  if (press.fired) {
+    lastPress = Date.now();
+    if (e.cancelable) e.preventDefault();
+  }
+  press = null;
+}
+
+document.addEventListener('touchend', endPress);
+document.addEventListener('touchcancel', endPress);
+
+// Right-click on a computer selects; on Android the long-press above already did, so just block the menu.
+document.addEventListener('contextmenu', e => {
+  const row = e.target.closest('[data-sel]');
+  if (!row) return;
+  e.preventDefault();
+  if (!press?.fired && Date.now() - lastPress > 1000) selToggle(row.dataset.sel);
 });
 
 /* ---------- pull to refresh (touch) ---------- */
