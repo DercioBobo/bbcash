@@ -209,10 +209,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 
 .top-actions { display: flex; align-items: center; gap: 2px; margin-right: -6px; }
 
-/* Logo + month switch + two icons must fit a 360px phone */
+/* Logo + month switch + three icons must fit a 360px phone */
 @media (max-width: 400px) {
   .topbar { gap: 8px; }
-  .month-switch .label { min-width: 108px; font-size: 14px; }
+  .month-switch .label { min-width: 100px; font-size: 14px; }
+  .top-actions .icon-btn { width: 32px; }
 }
 
 .sync {
@@ -785,6 +786,27 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .goal-sub b { color: var(--text); }
 .goal.finished { opacity: .6; }
 .goal.finished .amt { color: var(--income); font-size: 13px; }
+
+/* Notes */
+.note-text {
+  margin: 2px 0 0; font-size: 13.5px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+}
+.note.finished .amt { color: var(--muted); }
+.note .row-sub .tag { display: inline-flex; align-items: center; gap: 3px; }
+.note-log { margin: 0; }
+.note-log li { display: flex; align-items: center; gap: 10px; padding: 6px 0 6px 8px; }
+.note-log li + li { border-top: 1px solid var(--border); }
+.note-log .amt { font-size: 14px; }
+textarea { resize: vertical; min-height: 96px; line-height: 1.45; }
+
+/* Red dot on the Notes button when a reminder is due */
+.has-dot { position: relative; }
+.has-dot::after {
+  content: ''; position: absolute; top: 6px; right: 6px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--expense); box-shadow: 0 0 0 2px var(--bg);
+}
 
 .swatches button.sel { box-shadow: 0 0 0 2px var(--text); }
 

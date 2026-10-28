@@ -1,6 +1,6 @@
 // Network-first service worker: always fresh when online, app shell still opens offline.
 // The API is never cached — your data only lives in the app's own offline copy.
-const CACHE = 'bbcash-v5';
+const CACHE = 'bbcash-v6';
 const SHELL = ['./', 'index.html', 'css/style.css', 'js/app.js', 'icon.svg', 'icon.png', 'icon-512.png', 'site.webmanifest'];
 
 self.addEventListener('install', e => {

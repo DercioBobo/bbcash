@@ -94,6 +94,8 @@ const P = {
   calc: '<rect x="4" y="2" width="16" height="20" rx="3"/><path d="M8 6h8M8 11h.01M12 11h.01M16 11h.01M8 15h.01M12 15h.01M16 15h.01M8 19h.01M12 19h4"/>',
   copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
   trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+  note: '<path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5L15.5 3Z"/><path d="M15 3v6h6"/>',
+  plusminus: '<path d="M12 3v10M7 8h10M7 19h10"/>',
 };
 
 const ic = (name, size = 20) =>
@@ -154,6 +156,7 @@ function defaultData() {
     transactions: [],
     goals: [],
     debts: [],
+    notes: [],
   };
 }
 
@@ -169,6 +172,7 @@ function normalize(d) {
     transactions: Array.isArray(d.transactions) ? d.transactions : [],
     goals: Array.isArray(d.goals) ? d.goals : [],
     debts: Array.isArray(d.debts) ? d.debts : [],
+    notes: (Array.isArray(d.notes) ? d.notes : []).map(n => ({ text: '', amount: 0, log: [], remind: null, done: false, ...n })),
   };
 }
 
@@ -235,6 +239,10 @@ function pendingFor(ym) {
 const linkedTotal = (key, id) => sum(S.data.transactions.filter(t => t[key] === id && t.paid), t => t.amount);
 const debtPaid = d => round2((Number(d.initial) || 0) + linkedTotal('debtId', d.id));
 const debtLeft = d => Math.max(0, round2(d.total - debtPaid(d)));
+/** A note can hold money (e.g. kept for someone): starting amount + every "got more" − every "gave back". */
+const noteLeft = n => round2((Number(n.amount) || 0) + sum(n.log || [], l => l.amount));
+const noteHasMoney = n => Number(n.amount) > 0 || (n.log || []).length > 0;
+const notesDue = () => S.data.notes.filter(n => !n.done && n.remind && n.remind <= todayISO()).length;
 
 /**
  * One month's plan, nothing carried over from earlier months:
@@ -527,6 +535,7 @@ const VIEWS = {
   month: { label: 'Month', title: 'Cashflow', icon: 'calendar' },
   fixed: { label: 'Fixed', title: 'Fixed payments', icon: 'repeat' },
   goals: { label: 'Goals', title: 'Goals & debts', icon: 'target' },
+  notes: { label: 'Notes', title: 'Notes', icon: 'note' },
   stats: { label: 'Insights', title: 'Insights', icon: 'chart' },
   settings: { label: 'Settings', title: 'Settings', icon: 'settings' },
 };
@@ -559,6 +568,7 @@ function renderShell() {
         </div>
         <div class="top-actions">
           <button class="icon-btn" data-action="calc" aria-label="Calculator" title="Calculator (C)">${ic('calc', 22)}</button>
+          <button class="icon-btn mobile-only" data-action="go" data-view="notes" aria-label="Notes">${ic('note', 22)}</button>
           <button class="icon-btn mobile-only" data-action="go" data-view="settings" aria-label="Settings">${ic('settings', 22)}</button>
         </div>
       </header>
@@ -590,12 +600,14 @@ function render() {
   const isNow = S.month === ymNow();
   $('#month-label').innerHTML = `${ymLabel(S.month)}${isNow ? '' : '<small>Back to today</small>'}`;
   $$('[data-action="go"]').forEach(b => b.classList.toggle('active', b.dataset.view === S.view));
+  const due = notesDue();
+  $$('[data-view="notes"]').forEach(b => b.classList.toggle('has-dot', due > 0));
 
   // A selection belongs to one month on the Month screen: leaving it clears it.
   if (S.selKey !== S.view + S.month) { S.sel = null; S.selKey = S.view + S.month; }
   if (S.sel) { const pool = selPool(); for (const id of S.sel) if (!pool.has(id)) S.sel.delete(id); }
 
-  $('#main').innerHTML = { month: viewMonth, fixed: viewFixed, goals: viewGoals, stats: viewStats, settings: viewSettings }[S.view]();
+  $('#main').innerHTML = { month: viewMonth, fixed: viewFixed, goals: viewGoals, notes: viewNotes, stats: viewStats, settings: viewSettings }[S.view]();
   if (S.view === 'stats') drawCharts();
   updateSync();
   updateSelBar();
@@ -1004,6 +1016,56 @@ function viewGoals() {
 /* ---------- Insights view ---------- */
 
 /** Per-category cards for the selected month: done so far + still expected, against budget/target. */
+/* ---------- Notes view ---------- */
+
+function remindTag(iso) {
+  const diff = dayDiff(iso, todayISO());
+  if (diff < 0) return `<span class="tag red">${ic('bell', 12)} Overdue · ${dateShort(iso)}</span>`;
+  if (diff === 0) return `<span class="tag red">${ic('bell', 12)} Today</span>`;
+  return `<span class="tag">${ic('bell', 12)} ${diff === 1 ? 'Tomorrow' : dateShort(iso)}</span>`;
+}
+
+function noteRow(n) {
+  const hasMoney = noteHasMoney(n);
+  const subs = [];
+  if (n.remind && !n.done) subs.push(remindTag(n.remind));
+  if (n.log.length) subs.push(`${n.log.length} movement${n.log.length > 1 ? 's' : ''}`);
+  return `
+    <div class="goal note ${n.done ? 'finished' : ''}">
+      <div class="goal-top">
+        <button class="row-btn" data-action="edit-note" data-id="${esc(n.id)}">
+          <span class="row-text"><span class="row-title">${esc(n.title)}</span>${subs.length ? `<span class="row-sub">${subs.join(' · ')}</span>` : ''}</span>
+          ${hasMoney ? `<span class="amt">${money(noteLeft(n))}<small>${n.log.length ? `of ${fmtNumber(n.amount)}` : 'left'}</small></span>` : ''}
+        </button>
+        ${hasMoney && !n.done ? `<button class="btn btn-sm" data-action="note-move" data-id="${esc(n.id)}" aria-label="Money in or out of ${esc(n.title)}">${ic('plusminus', 16)}</button>` : ''}
+      </div>
+      ${n.text ? `<p class="note-text">${esc(n.text)}</p>` : ''}
+    </div>`;
+}
+
+function viewNotes() {
+  const { notes } = S.data;
+  // Reminders first (soonest on top), then the newest.
+  const order = (a, b) => (a.remind || '9999').localeCompare(b.remind || '9999') || (b.created || 0) - (a.created || 0);
+  const open = notes.filter(n => !n.done).sort(order);
+  const done = notes.filter(n => n.done).sort((a, b) => (b.created || 0) - (a.created || 0));
+  const held = sum(open.filter(noteHasMoney), noteLeft);
+  return `
+    <div class="stack">
+      <div class="btn-row">
+        <button class="btn btn-primary" data-action="new-note">${ic('plus', 18)} New note</button>
+      </div>
+      <div class="grid-2">
+        <section class="card">
+          <header class="card-head"><div><h2>Notes</h2>${held ? `<span class="sub">${money(held)} kept in notes</span>` : ''}</div><span class="pill">${open.length}</span></header>
+          ${open.length ? open.map(noteRow).join('') : `<div class="empty small">${deco('<div class="big">📝</div>')}Money things you don't want to forget — cash someone gave you to keep, what you still have to give back, a bill to check.<br><button class="link" data-action="new-note">+ Write a note</button></div>`}
+        </section>
+        ${done.length ? `<section class="card"><header class="card-head"><h2>Done</h2><span class="pill">${done.length}</span></header>${done.map(noteRow).join('')}</section>` : ''}
+      </div>
+      <p class="hint">Notes don't change your cashflow. Give a note an amount to track money you hold — tap ${ic('plusminus', 13)} each time you give some back or get more. Set a date and the daily reminder will include it.</p>
+    </div>`;
+}
+
 function categoryMonthCards() {
   const done = new Map();
   for (const t of S.data.transactions) if (t.paid && ymOf(t.date) === S.month) done.set(t.category, (done.get(t.category) || 0) + t.amount);
@@ -1595,6 +1657,51 @@ function debtPayForm(item) {
     </form>`);
 }
 
+function noteForm(n) {
+  const isNew = !n;
+  n = n || { title: '', text: '', amount: '', remind: '', log: [], done: false };
+  const log = [...n.log].sort((a, b) => b.date.localeCompare(a.date)).map(l => `
+    <li><span class="row-text"><span class="row-title">${esc(l.text || (l.amount < 0 ? 'Gave back' : 'Got more'))}</span><span class="row-sub">${dateShort(l.date)}</span></span>
+      <span class="amt ${l.amount < 0 ? 'expense' : 'income'}">${money(l.amount, true)}</span>
+      <button type="button" class="icon-btn" data-action="note-log-remove" data-id="${esc(n.id)}" data-lid="${esc(l.id)}" aria-label="Remove">${ic('x', 16)}</button></li>`).join('');
+  openSheet(isNew ? 'New note' : 'Note', `
+    <form class="form" data-form="note">
+      <input type="hidden" name="id" value="${esc(n.id || '')}">
+      <label class="field"><span class="label">Title</span><input name="title" value="${esc(n.title)}" placeholder="e.g. Money my wife gave me to keep" required maxlength="60" ${isNew ? 'autofocus' : ''}></label>
+      <label class="field"><span class="label">Note</span><textarea name="text" rows="4" maxlength="2000" placeholder="Anything to remember — who, why, what you agreed">${esc(n.text)}</textarea></label>
+      <div class="field-row">
+        <label class="field"><span class="label">Amount (${esc(S.data.settings.currency)})</span><input name="amount" inputmode="decimal" value="${n.amount || ''}" placeholder="Optional"></label>
+        <label class="field"><span class="label">Remind me on</span><input type="date" name="remind" value="${esc(n.remind || '')}"></label>
+      </div>
+      ${log ? `<div class="field"><span class="label">Money in &amp; out · ${money(noteLeft(n))} left</span><ul class="list note-log">${log}</ul></div>` : ''}
+      ${!isNew && noteHasMoney(n) && !n.done ? `<button type="button" class="btn btn-block" data-action="note-move" data-id="${esc(n.id)}">${ic('plusminus', 18)} Gave some back / got more</button>` : ''}
+      ${isNew ? '' : `<button type="button" class="btn btn-block" data-action="note-done" data-id="${esc(n.id)}">${n.done ? `${ic('refresh', 18)} Open again` : `${ic('check', 18)} Mark as done`}</button>`}
+      <div class="sheet-actions">
+        ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-note" data-id="${esc(n.id)}">${ic('trash', 18)} Delete</button>`}
+        <button class="btn btn-primary btn-lg">${isNew ? 'Save note' : 'Save'}</button>
+      </div>
+    </form>`);
+}
+
+/** Record money given back (or more handed over) on a note. Never touches the cashflow. */
+function noteMoveForm(n) {
+  openSheet(n.title, `
+    <form class="form" data-form="note-move">
+      <input type="hidden" name="id" value="${esc(n.id)}">
+      <div class="seg">
+        <label class="t-expense"><input type="radio" name="dir" value="out" checked><span>${ic('up', 16)} Gave back / used</span></label>
+        <label class="t-income"><input type="radio" name="dir" value="in"><span>${ic('down', 16)} Got more</span></label>
+      </div>
+      <p class="hint" style="text-align:center">${money(noteLeft(n))} left now</p>
+      ${amountField('expense', 0)}
+      <div class="field-row">
+        <label class="field"><span class="label">Date</span><input type="date" name="date" value="${todayISO()}" required></label>
+        <label class="field"><span class="label">What for</span><input name="text" placeholder="Optional" maxlength="60"></label>
+      </div>
+      <button class="btn btn-primary btn-lg btn-block">${ic('check')} Save</button>
+    </form>`);
+}
+
 /** Moving a goal that has no price yet: ask for it first. */
 function goalMoveForm(g) {
   const ym = ymNow();
@@ -1944,6 +2051,26 @@ const ACTIONS = {
     closeSheet();
     mutate(d => { d.debts = d.debts.filter(x => x.id !== debt.id); }, 'Debt deleted');
   },
+  'new-note': () => noteForm(),
+  'edit-note': el => noteForm(S.data.notes.find(n => n.id === el.dataset.id)),
+  'note-move': el => noteMoveForm(S.data.notes.find(n => n.id === el.dataset.id)),
+  'note-done': el => {
+    const id = el.dataset.id;
+    const done = !S.data.notes.find(x => x.id === id).done;
+    closeSheet();
+    mutate(d => { d.notes.find(x => x.id === id).done = done; }, done ? 'Note marked as done' : 'Note opened again');
+  },
+  'note-log-remove': el => {
+    const id = el.dataset.id;
+    mutate(d => { const n = d.notes.find(x => x.id === id); n.log = n.log.filter(l => l.id !== el.dataset.lid); }, 'Removed');
+    noteForm(S.data.notes.find(x => x.id === id));
+  },
+  'delete-note': el => {
+    const n = S.data.notes.find(x => x.id === el.dataset.id);
+    if (!confirm(`Delete the note "${n.title}"?`)) return;
+    closeSheet();
+    mutate(d => { d.notes = d.notes.filter(x => x.id !== n.id); }, 'Note deleted');
+  },
   calc: calcSheet,
   'calc-key': el => calcPress(el.dataset.k),
   'calc-copy': () => {
@@ -2076,6 +2203,28 @@ const FORMS = {
       type: lent ? 'income' : 'expense', category: fd.get('category'),
       note: lent ? `${debt.name} (repaid)` : `${debt.name} (debt)`, debtId: id,
     }), lent ? 'Payment received' : 'Payment recorded');
+  },
+
+  note(form, fd) {
+    const raw = fd.get('amount').trim();
+    const amount = raw ? parseAmount(raw) : 0;
+    if (Number.isNaN(amount)) return invalid(form, 'amount');
+    const id = fd.get('id');
+    const n = { title: fd.get('title').trim(), text: fd.get('text').trim(), amount, remind: fd.get('remind') || null };
+    closeSheet();
+    if (id) mutate(d => Object.assign(d.notes.find(x => x.id === id), n), 'Note saved');
+    else mutate(d => d.notes.push({ id: uid(), created: Date.now(), log: [], done: false, ...n }), 'Note saved');
+  },
+
+  'note-move'(form, fd) {
+    const amount = parseAmount(fd.get('amount'));
+    if (!(amount > 0)) return invalid(form, 'amount');
+    const id = fd.get('id');
+    const out = fd.get('dir') === 'out';
+    closeSheet();
+    mutate(d => d.notes.find(x => x.id === id).log.push({
+      id: uid(), date: fd.get('date'), amount: out ? -amount : amount, text: fd.get('text').trim(),
+    }), out ? 'Saved — given back' : 'Saved — added');
   },
 
   'goal-move'(form, fd) {
@@ -2365,6 +2514,10 @@ document.addEventListener('change', e => {
     $('.amount-field', form)?.classList.add(el.value);
     const paidLabel = $('#tx-paid-label', form);
     if (paidLabel) paidLabel.textContent = el.value === 'income' ? 'Received' : 'Paid';
+  }
+  if (el.name === 'dir' && el.type === 'radio') {
+    $('.amount-field', el.form)?.classList.remove('expense', 'income');
+    $('.amount-field', el.form)?.classList.add(el.value === 'out' ? 'expense' : 'income');
   }
   if (el.name === 'ctype' && el.type === 'radio') {
     $('#cat-budget-label').textContent = budgetLabel(el.value);

@@ -7,7 +7,8 @@
  *
  * Once a day, at the hour chosen in the app (Settings → Reminders), it sends one notification to
  * every device that turned reminders on, listing the unpaid expenses planned for today
- * (and tomorrow, if "Also the day before" is on). Nothing planned → nothing sent.
+ * (and tomorrow, if "Also the day before" is on), plus notes set to remind today.
+ * Nothing planned → nothing sent.
  *
  * Test it by hand:  php cron-reminders.php --now   (sends right away, ignores the hour)
  */
@@ -50,8 +51,11 @@ $next = !empty($settings['remindDayBefore'])
     ? array_values(array_filter($pending, function ($p) use ($tomorrow) { return $p['date'] === $tomorrow; }))
     : [];
 $earlier = array_values(array_filter($pending, function ($p) use ($today) { return $p['date'] < $today; }));
+$notes = array_values(array_filter($data['notes'] ?? [], function ($n) use ($today) {
+    return empty($n['done']) && ($n['remind'] ?? '') === $today;
+}));
 
-$message = reminderMessage($due, $next, $earlier, $settings);
+$message = reminderMessage($due, $next, $earlier, $notes, $settings);
 $sent = $message ? pushToAll($message + ['url' => './', 'tag' => 'bbcash-' . $today]) : 0;
 
 withLock(function () use ($today) {
@@ -98,9 +102,15 @@ function pendingExpenses(array $data, string $ym): array
     return $items;
 }
 
-function reminderMessage(array $due, array $next, array $earlier, array $settings): ?array
+/** What a note still holds: starting amount + every movement (negative = given back). */
+function noteLeft(array $n): float
 {
-    if (!$due && !$next) {
+    return (float)($n['amount'] ?? 0) + array_sum(array_column($n['log'] ?? [], 'amount'));
+}
+
+function reminderMessage(array $due, array $next, array $earlier, array $notes, array $settings): ?array
+{
+    if (!$due && !$next && !$notes) {
         return null;
     }
     $money = function (float $n) use ($settings): string {
@@ -120,15 +130,30 @@ function reminderMessage(array $due, array $next, array $earlier, array $setting
             ? 'To pay today: ' . $due[0]['name']
             : count($due) . ' payments planned today · ' . $money($total($due));
         $lines = count($due) === 1 ? [$money($due[0]['amount'])] : $list($due, 4);
-    } else {
+    } elseif ($next) {
         $title = 'Tomorrow: ' . (count($next) === 1 ? $next[0]['name'] : count($next) . ' payments planned');
         $lines = count($next) === 1 ? [$money($next[0]['amount'])] : $list($next, 4);
+    } else {
+        $title = count($notes) === 1 ? 'Note: ' . $notes[0]['title'] : count($notes) . ' notes to remember today';
+        $lines = array_map(function ($n) use ($money, $notes) {
+            $held = !empty($n['amount']) || !empty($n['log']) ? $money(noteLeft($n)) . ' left' : '';
+            $text = trim(explode("\n", (string)($n['text'] ?? ''))[0]);
+            if (count($notes) === 1) {
+                return implode(' · ', array_filter([$text, $held]));
+            }
+            return $n['title'] . ($held ? ' · ' . $held : '');
+        }, array_slice($notes, 0, 4));
+        $lines = array_values(array_filter($lines));
+        $notes = [];
     }
     if ($due && $next) {
         $lines[] = 'Tomorrow: ' . implode(', ', array_column(array_slice($next, 0, 3), 'name')) . (count($next) > 3 ? '…' : '');
     }
     if ($earlier) {
         $lines[] = count($earlier) . ' earlier this month still unpaid';
+    }
+    if ($notes) {
+        $lines[] = 'Notes: ' . implode(', ', array_column(array_slice($notes, 0, 3), 'title')) . (count($notes) > 3 ? '…' : '');
     }
     return ['title' => $title, 'body' => implode("\n", $lines)];
 }
