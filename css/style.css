@@ -77,7 +77,17 @@
 /* ---------- base ---------- */
 *, *::before, *::after { box-sizing: border-box; }
 
-html { -webkit-text-size-adjust: 100%; }
+html {
+  -webkit-text-size-adjust: 100%;
+  touch-action: manipulation; /* no double-tap zoom or tap delay, like a native app */
+}
+
+/* App chrome behaves like native controls: no text selection, no long-press menus, no image dragging. */
+button, .tabbar, .sidebar, .topbar, .sheet-head, .label, .card-head, .chip, .seg, .toast {
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+img { -webkit-user-drag: none; -webkit-touch-callout: none; }
 
 body {
   margin: 0;
@@ -1074,7 +1084,10 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 
 /* ---------- sheet (bottom sheet on mobile, dialog on desktop) ---------- */
 .sheet {
-  position: fixed; inset: 0; z-index: 50;
+  /* Pinned to the visible area (set by fitViewport in app.js), so the on-screen keyboard never covers it. */
+  position: fixed; left: 0; right: 0; z-index: 50;
+  top: var(--vvt, 0px);
+  height: var(--vvh, 100%);
   display: flex; align-items: flex-end; justify-content: center;
 }
 
@@ -1087,7 +1100,7 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 .sheet-panel {
   position: relative;
   width: 100%; max-width: 560px;
-  max-height: 92dvh;
+  max-height: min(92dvh, calc(var(--vvh, 100dvh) - 24px));
   overflow-y: auto;
   overflow-x: hidden; /* never let a wide child make the sheet slide sideways */
   touch-action: pan-y;
@@ -1148,6 +1161,11 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
   .sheet-panel::before { display: none; }
   .sheet.open .sheet-panel { opacity: 1; transform: none; }
 }
+
+/* Keyboard open: the sheet sits right on top of it, no room kept for the home indicator. */
+.kb-open .sheet-panel { --pad-b: 10px; }
+/* …and the tab bar steps aside instead of riding up on the keyboard. */
+.kb-open .tabbar, .kb-open .selbar { display: none; }
 
 /* ---------- toast ---------- */
 .toast {

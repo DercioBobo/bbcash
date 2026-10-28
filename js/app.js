@@ -611,6 +611,7 @@ function render() {
   if (S.view === 'stats') drawCharts();
   updateSync();
   updateSelBar();
+  syncBack();
 }
 
 /* ---------- Month view ---------- */
@@ -1324,6 +1325,7 @@ function viewSettings() {
    ====================================================================== */
 
 let sheetTimer = null;
+let sheetOpen = false;
 
 function openSheet(title, body) {
   clearTimeout(sheetTimer);
@@ -1332,7 +1334,9 @@ function openSheet(title, body) {
     <header class="sheet-head"><h2>${esc(title)}</h2><button class="icon-btn" data-action="close-sheet" aria-label="Close">${ic('x')}</button></header>
     ${body}`;
   sheet.hidden = false;
+  sheetOpen = true;
   document.body.classList.add('noscroll');
+  syncBack();
   requestAnimationFrame(() => requestAnimationFrame(() => sheet.classList.add('open')));
   // Focus right away, still inside the tap: iOS only opens the keyboard for focus it sees as user-initiated.
   const focus = $('[autofocus]', sheet);
@@ -1345,8 +1349,11 @@ function openSheet(title, body) {
 function closeSheet() {
   const sheet = $('#sheet');
   if (sheet.hidden) return;
+  sheetOpen = false;
+  if (sheet.contains(document.activeElement)) document.activeElement.blur(); // drop the keyboard with the sheet
   sheet.classList.remove('open');
   document.body.classList.remove('noscroll');
+  syncBack();
   sheetTimer = setTimeout(() => { sheet.hidden = true; $('.sheet-panel', sheet).innerHTML = ''; }, 260);
 }
 
@@ -2688,6 +2695,57 @@ function endPull() {
 
 document.addEventListener('touchend', endPull);
 document.addEventListener('touchcancel', () => { ptr = null; setPull(0); });
+
+/* ---------- Back button / gesture: close the sheet, then go back to Month (like a native app) ---------- */
+
+// One extra history entry ("guard") exists while there is something to go back from.
+let backGuard = false;
+let backIgnore = false; // the next popstate is our own history.back(), not the user's
+
+const needsBack = () => sheetOpen || (!!S.data && !$('#app').hidden && S.view !== 'month');
+
+function syncBack() {
+  if (needsBack()) {
+    if (!backGuard) { history.pushState({ bbGuard: 1 }, ''); backGuard = true; }
+  } else if (backGuard && !backIgnore) {
+    backIgnore = true;
+    history.back();
+  }
+}
+
+window.addEventListener('popstate', () => {
+  backGuard = false;
+  if (backIgnore) { backIgnore = false; syncBack(); return; }
+  if (sheetOpen) closeSheet();
+  else if (needsBack()) { S.view = 'month'; render(); window.scrollTo(0, 0); }
+  syncBack();
+});
+
+/* ---------- keep sheets above the on-screen keyboard ---------- */
+
+// iOS (and Android in some modes) draws the keyboard over the page without shrinking it, so a sheet
+// pinned to the bottom of the screen ends up behind the keyboard. Pin it to the visible area instead.
+const vv = window.visualViewport;
+let vvMax = 0;
+
+function fitViewport() {
+  if (!vv) return;
+  const root = document.documentElement;
+  vvMax = Math.max(vvMax, vv.height);
+  root.style.setProperty('--vvh', `${vv.height}px`);
+  root.style.setProperty('--vvt', `${vv.offsetTop}px`);
+  const kb = vvMax - vv.height > 120;
+  root.classList.toggle('kb-open', kb);
+  const el = document.activeElement;
+  if (kb && el?.closest?.('#sheet')) requestAnimationFrame(() => el.scrollIntoView({ block: 'nearest' }));
+}
+
+if (vv) {
+  vv.addEventListener('resize', fitViewport);
+  vv.addEventListener('scroll', fitViewport);
+  window.addEventListener('orientationchange', () => { vvMax = 0; setTimeout(fitViewport, 300); });
+  fitViewport();
+}
 
 /* ---------- drag the sheet down to close it (mobile) ---------- */
 
