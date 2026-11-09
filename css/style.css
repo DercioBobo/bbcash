@@ -797,6 +797,15 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .goal.finished { opacity: .6; }
 .goal.finished .amt { color: var(--income); font-size: 13px; }
 
+/* Projects */
+.project-cats { list-style: none; margin: 0; padding: 0; }
+.project-cats li { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; font-size: 14px; }
+.project-cats li + li { border-top: 1px solid var(--border); }
+.archived summary { display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; }
+.archived summary::-webkit-details-marker { display: none; }
+.archived summary h2 { font-size: 15.5px; font-weight: 800; letter-spacing: -.01em; }
+.archived[open] summary { margin-bottom: 8px; }
+
 /* Notes */
 .note-text {
   margin: 2px 0 0; font-size: 13.5px; color: var(--muted); white-space: pre-line; overflow-wrap: anywhere;
@@ -936,6 +945,23 @@ input[type="color"] { padding: 4px; height: 46px; cursor: pointer; }
 .paid-toggle .switch { height: 48px; }
 
 .form { display: flex; flex-direction: column; gap: 16px; }
+
+/* Paste a list: one row per line with its own price */
+.list-rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.list-row { display: grid; grid-template-columns: minmax(0, 1fr) 104px 30px; gap: 6px; align-items: center; }
+.list-row input { padding: 10px 12px; scroll-margin-bottom: 110px; } /* clear the sticky Add button */
+.list-row [name="price"] { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+.list-row .icon-btn { width: 30px; height: 30px; color: var(--muted); }
+.list-more { align-self: flex-start; }
+.list-unit {
+  grid-column: 1 / -1; justify-self: end;
+  margin: -2px 36px 2px 0; padding: 3px 9px;
+  border: 1px dashed var(--border); border-radius: 99px;
+  background: none; color: var(--muted);
+  font: inherit; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.list-row.unit .list-unit { border-style: solid; border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
 
 .seg {
   display: grid; grid-template-columns: 1fr 1fr;

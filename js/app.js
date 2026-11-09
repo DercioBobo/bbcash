@@ -132,6 +132,7 @@ function defaultData() {
   const c = (id, name, icon, color, type) => ({ id, name, icon, color, type, budget: 0 });
   return {
     version: 1,
+    projects: [],
     settings: { currency: 'MT', decimals: 2, startBalance: 0, theme: 'auto', iconStyle: 'initials', remindHour: 8, remindDayBefore: false },
     categories: [
       c('salary', 'Salary', '💼', '#10b981', 'income'),
@@ -172,6 +173,7 @@ function normalize(d) {
     transactions: Array.isArray(d.transactions) ? d.transactions : [],
     goals: Array.isArray(d.goals) ? d.goals : [],
     debts: Array.isArray(d.debts) ? d.debts : [],
+    projects: Array.isArray(d.projects) ? d.projects : [],
     notes: (Array.isArray(d.notes) ? d.notes : []).map(n => ({ text: '', amount: 0, log: [], remind: null, done: false, ...n })),
   };
 }
@@ -243,6 +245,16 @@ const debtLeft = d => Math.max(0, round2(d.total - debtPaid(d)));
 const noteLeft = n => round2((Number(n.amount) || 0) + sum(n.log || [], l => l.amount));
 const noteHasMoney = n => Number(n.amount) > 0 || (n.log || []).length > 0;
 const notesDue = () => S.data.notes.filter(n => !n.done && n.remind && n.remind <= todayISO()).length;
+
+/** A project is a label on chosen expenses (t.projectId), across any number of months. */
+const projectOf = id => S.data.projects.find(p => p.id === id);
+const openProjects = () => S.data.projects.filter(p => !p.archived);
+const projectTag = t => { const p = t.projectId && projectOf(t.projectId); return p ? ` <span class="tag">${esc(p.name)}</span>` : ''; };
+
+function projectTotals(id) {
+  const list = S.data.transactions.filter(t => t.projectId === id && t.type === 'expense');
+  return { list, spent: sum(list.filter(t => t.paid), t => t.amount), planned: sum(list.filter(t => !t.paid), t => t.amount) };
+}
 
 /**
  * One month's plan, nothing carried over from earlier months:
@@ -687,7 +699,7 @@ function pendingRow(p) {
         ${catIcon(c, '', p.type)}
         <span class="row-text">
           <span class="row-title">${esc(p.note || c.name)}</span>
-          <span class="row-sub">${when}${p.custom ? ' <span class="tag">Changed</span>' : ''}</span>
+          <span class="row-sub">${when}${p.custom ? ' <span class="tag">Changed</span>' : ''}${projectTag(p)}</span>
         </span>
         <span class="amt ${p.type}">${money(signed(p), true)}</span>
       </button>
@@ -785,7 +797,7 @@ function txCard(txs) {
 function txListInner(txs) {
   const q = S.search.trim().toLowerCase();
   let list = txs.filter(t => S.filter === 'all' || t.type === S.filter);
-  if (q) list = list.filter(t => `${t.note || ''} ${cat(t.category).name} ${t.amount}`.toLowerCase().includes(q));
+  if (q) list = list.filter(t => `${t.note || ''} ${cat(t.category).name} ${t.amount} ${projectOf(t.projectId)?.name || ''}`.toLowerCase().includes(q));
   if (!list.length) {
     return txs.length
       ? '<div class="empty small">No matches.</div>'
@@ -807,7 +819,7 @@ function txListInner(txs) {
           ${catIcon(c, '', t.type)}
           <span class="row-text">
             <span class="row-title">${esc(t.note || c.name)}</span>
-            <span class="row-sub">${esc(c.name)}${t.recurringId ? ' <span class="tag">Fixed</span>' : ''}${t.goalId ? ' <span class="tag">Goal</span>' : ''}${t.debtId ? ' <span class="tag">Debt</span>' : ''}</span>
+            <span class="row-sub">${esc(c.name)}${t.recurringId ? ' <span class="tag">Fixed</span>' : ''}${t.goalId ? ' <span class="tag">Goal</span>' : ''}${t.debtId ? ' <span class="tag">Debt</span>' : ''}${projectTag(t)}</span>
           </span>
           <span class="amt ${t.type}">${money(signed(t), true)}</span>
         </button></li>`;
@@ -865,8 +877,25 @@ function updateSelBar() {
       <small>${vals.length} selected${mixed ? ` · in ${fmtNumber(inc)} · out ${fmtNumber(out)}` : ''}</small>
       <b class="num">${money(sum(vals), mixed)}</b>
     </span>
+    ${openProjects().length && selTaggable().length ? '<button class="btn btn-sm" data-action="sel-project">Project</button>' : ''}
     <button class="btn btn-sm" data-action="sel-calc">${ic('calc', 16)} Calc</button>
     ${close}`;
+}
+
+/** Selected entries that can take a project: real expenses (a fixed payment not paid yet isn't an entry). */
+const selTaggable = () => S.data.transactions.filter(t => S.sel?.has(t.id) && t.type === 'expense');
+
+function selProjectSheet() {
+  const n = selTaggable().length;
+  const skipped = S.sel.size - n;
+  const row = (id, name, color) => `
+        <li><button class="row-btn" data-action="sel-project-set" data-id="${esc(id)}">
+          ${id ? catIcon({ icon: PROJECT_ICON, color, name }) : ''}
+          <span class="row-text"><span class="row-title">${esc(name)}</span></span>
+        </button></li>`;
+  openSheet('Add to project', `
+    <p class="hint" style="margin-bottom:8px">${n} expense${n === 1 ? '' : 's'}${skipped ? ` · ${skipped} skipped (income or unpaid fixed payments can’t have a project)` : ''}</p>
+    <ul class="list">${openProjects().map(p => row(p.id, p.name, p.color)).join('')}${row('', 'No project')}</ul>`);
 }
 
 /* ---------- Fixed payments view ---------- */
@@ -962,6 +991,128 @@ function goalRow(g) {
     </div>`;
 }
 
+/* ---------- Projects (top of the Goals tab) ---------- */
+
+const PROJECT_ICON = '🏗️';
+
+/** Spent + still planned against the budget. Only shown when the project has a budget. */
+function projectBar(p, { spent, planned }) {
+  const budget = Number(p.budget) || 0;
+  if (!budget) return '';
+  const scale = Math.max(budget, spent + planned);
+  return `<div class="bar"><span class="spent" style="width:${(spent / scale) * 100}%"></span><span class="planned" style="width:${(planned / scale) * 100}%"></span></div>`;
+}
+
+function projectRow(p) {
+  const totals = projectTotals(p.id);
+  const budget = Number(p.budget) || 0;
+  const subs = [];
+  if (budget) subs.push(`of ${fmtNumber(budget)}`);
+  if (totals.planned) subs.push(`${fmtNumber(totals.planned)} still planned`);
+  if (!totals.list.length) subs.push('No expenses yet');
+  return `
+    <div class="goal" style="--c:${esc(p.color)}">
+      <div class="goal-top">
+        <button class="row-btn" data-action="open-project" data-id="${esc(p.id)}">
+          ${catIcon({ icon: PROJECT_ICON, color: p.color, name: p.name })}
+          <span class="row-text"><span class="row-title">${esc(p.name)}</span><span class="row-sub num">${subs.join(' · ')}</span></span>
+          <span class="amt">${money(totals.spent)}<small>spent</small></span>
+        </button>
+      </div>
+      ${projectBar(p, totals)}
+    </div>`;
+}
+
+function projectsCard() {
+  const open = openProjects();
+  return `
+    <section class="card">
+      <header class="card-head"><h2>Projects</h2><button class="btn btn-sm" data-action="new-project">${ic('plus', 16)} New project</button></header>
+      ${open.length ? open.map(projectRow).join('') : `<div class="empty small">${deco('<div class="big">🏗️</div>')}Building a tank, fixing the roof? Create a project, choose it on the expenses that belong to it, and see what it cost in total.</div>`}
+    </section>`;
+}
+
+function archivedProjectsCard() {
+  const list = S.data.projects.filter(p => p.archived);
+  if (!list.length) return '';
+  return `
+    <section class="card">
+      <details class="archived">
+        <summary><h2>Archived projects</h2><span class="pill">${list.length}</span></summary>
+        ${list.map(projectRow).join('')}
+      </details>
+    </section>`;
+}
+
+/** One project across every month: what it cost, by category, and each expense. */
+function projectSheet(p) {
+  const totals = projectTotals(p.id);
+  const { list, spent, planned } = totals;
+  const budget = Number(p.budget) || 0;
+  const left = round2(budget - spent - planned);
+
+  const byCat = new Map();
+  for (const t of list) byCat.set(t.category, round2((byCat.get(t.category) || 0) + t.amount));
+  const catRows = byCat.size > 1
+    ? `<div class="field"><span class="label">By category · spent + planned</span><ul class="project-cats">${[...byCat].sort((a, b) => b[1] - a[1]).map(([id, v]) =>
+      `<li><span>${esc(cat(id).name)}</span><b class="num">${money(v)}</b></li>`).join('')}</ul></div>` : '';
+
+  const months = new Map();
+  for (const t of [...list].sort((a, b) => b.date.localeCompare(a.date) || (b.created || 0) - (a.created || 0))) {
+    const k = ymOf(t.date);
+    if (!months.has(k)) months.set(k, []);
+    months.get(k).push(t);
+  }
+  const entries = [...months].map(([ym, items]) => `
+      <div class="day-head"><span>${ymLabel(ym)}</span><span class="num">${money(sum(items, t => t.amount))}</span></div>
+      <ul class="list">${items.map(t => {
+        const c = cat(t.category);
+        return `<li><button class="row-btn" data-action="edit-tx" data-id="${esc(t.id)}">
+          ${catIcon(c)}
+          <span class="row-text"><span class="row-title">${esc(t.note || c.name)}</span><span class="row-sub">${dateShort(t.date)} · ${esc(c.name)}${t.paid ? '' : ' <span class="tag">Planned</span>'}</span></span>
+          <span class="amt">${money(t.amount)}</span>
+        </button></li>`;
+      }).join('')}</ul>`).join('');
+
+  openSheet(p.name, `
+    <div class="form" style="--c:${esc(p.color)}">
+      <div class="sum-grid">
+        <div class="sum"><small>Spent</small><b>${money(spent)}</b></div>
+        <div class="sum"><small>Still planned</small><b>${money(planned)}</b></div>
+        ${budget
+          ? `<div class="sum accent"><small>${left < 0 ? 'Over budget' : 'Left of budget'}</small><b>${money(Math.abs(left))}</b></div>`
+          : `<div class="sum accent"><small>Total</small><b>${money(spent + planned)}</b></div>`}
+      </div>
+      ${projectBar(p, totals)}
+      ${catRows}
+      <div>${entries || '<div class="empty small">No expenses in this project yet.</div>'}</div>
+      <div class="sheet-actions">
+        ${p.archived
+          ? `<button type="button" class="btn" data-action="project-archive" data-id="${esc(p.id)}">Reopen</button>`
+          : `<button type="button" class="btn" data-action="project-archive" data-id="${esc(p.id)}">Archive</button>`}
+        <button type="button" class="btn" data-action="edit-project" data-id="${esc(p.id)}">${ic('edit', 18)} Edit</button>
+        ${p.archived ? '' : `<button type="button" class="btn btn-primary btn-lg" data-action="project-add" data-id="${esc(p.id)}">${ic('plus', 18)} Expense</button>`}
+      </div>
+    </div>`);
+}
+
+function projectForm(p) {
+  const isNew = !p;
+  p = p || { name: '', budget: '', color: COLORS[Math.floor(Math.random() * COLORS.length)] };
+  openSheet(isNew ? 'New project' : 'Edit project', `
+    <form class="form" data-form="project">
+      <input type="hidden" name="id" value="${esc(p.id || '')}">
+      <label class="field"><span class="label">Name</span><input name="name" value="${esc(p.name)}" placeholder="e.g. Water tank, Roof repair" required maxlength="40" autocomplete="off" autofocus></label>
+      <label class="field"><span class="label">Budget (${esc(S.data.settings.currency)})</span><input name="budget" inputmode="decimal" value="${p.budget || ''}" placeholder="Optional" autocomplete="off"></label>
+      <div class="field"><span class="label">Color</span><input type="hidden" name="color" value="${esc(p.color)}">
+        <div class="swatches">${COLORS.map(x => `<button type="button" class="${x === p.color ? 'sel' : ''}" style="--c:${x}" data-action="pick-color" data-color="${x}" aria-label="${x}"></button>`).join('')}</div></div>
+      <div class="sheet-actions">
+        ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-project" data-id="${esc(p.id)}">${ic('trash', 18)} Delete</button>`}
+        <button class="btn btn-primary btn-lg">${isNew ? 'Create project' : 'Save'}</button>
+      </div>
+    </form>`);
+}
+
 function viewGoals() {
   const { goals, debts } = S.data;
   const owe = debts.filter(d => d.type !== 'lent');
@@ -988,6 +1139,7 @@ function viewGoals() {
 
   return `
     <div class="stack">
+      ${projectsCard()}
       <div class="sum-grid">
         <div class="sum out"><small>You owe</small><b>${money(sum(owe, debtLeft))}</b></div>
         <div class="sum in"><small>Owed to you</small><b>${money(sum(lent, debtLeft))}</b></div>
@@ -1010,6 +1162,7 @@ function viewGoals() {
           ${lent.length ? `<section class="card"><header class="card-head"><h2>Owed to me</h2><span class="pill">${lent.length}</span></header>${debtRows(lent)}</section>` : ''}
         </div>
       </div>
+      ${archivedProjectsCard()}
       <p class="hint">Moving a goal to this month adds it as a planned expense, ready to tick off when you buy it. Recording a debt payment also adds an entry to that month's cashflow, so your balance stays accurate. Delete that entry to undo it.</p>
     </div>`;
 }
@@ -1426,39 +1579,145 @@ const amountField = (type, value, focus = true) => `
 /** Default date for a new entry: today if viewing this month, else the 1st of the viewed month. */
 const defaultDate = () => (S.month === ymNow() ? todayISO() : `${S.month}-01`);
 
-function txForm(t) {
+const datePaidFields = t => `
+      <div class="date-paid">
+        <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
+        <label class="field paid-toggle"><span class="label" id="tx-paid-label">${t.type === 'income' ? 'Received' : 'Paid'}</span>
+          <span class="switch"><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></span></label>
+      </div>`;
+
+const catPickField = (label, type, selected, hideFixed) => `
+      <div class="field"><span class="label">${label}</span>
+        <details class="cat-pick" id="cat-pick">
+          <summary><span id="cat-current"></span>${ic('chevron', 18)}</summary>
+          <div class="cat-grid" id="cat-grid" ${hideFixed ? 'data-hide-fixed="1"' : ''}>${catGrid(type, selected, hideFixed)}</div>
+        </details>
+      </div>`;
+
+/** Project picker: only there when a project can be chosen, and only for expenses. An archived project stays listed on its own entries. */
+function projectField(type, selected, label = 'Project') {
+  const list = S.data.projects.filter(p => !p.archived || p.id === selected);
+  if (!list.length) return '';
+  return `
+      <label class="field project-field" ${type === 'income' ? 'hidden' : ''}><span class="label">${label}</span>
+        <select name="project"><option value="">None</option>${list.map(p => `<option value="${esc(p.id)}" ${p.id === selected ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></label>`;
+}
+
+function initCatPick() {
+  syncCatPick();
+  // Opening the picker: bring the whole grid into view above the Add button.
+  $('#cat-pick')?.addEventListener('toggle', e => {
+    if (e.target.open) e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  });
+}
+
+function txForm(t, projectId = '') {
   const isNew = !t;
   // New entries default to planned: most are expected expenses, marked paid later.
-  t = t || { type: 'expense', amount: '', category: '', date: defaultDate(), note: '', paid: false };
+  t = t || { type: 'expense', amount: '', category: '', date: defaultDate(), note: '', paid: false, projectId };
   openSheet(isNew ? 'New entry' : 'Edit entry', `
     <form class="form" data-form="tx">
       <input type="hidden" name="id" value="${esc(t.id || '')}">
       ${typeSeg(t.type)}
       ${amountField(t.type, t.amount, isNew)}
       <label class="field"><span class="label">Description</span><input name="note" value="${esc(t.note || '')}" placeholder="What is it for? (optional)" maxlength="80" autocomplete="off" enterkeyhint="done"></label>
-      <div class="date-paid">
-        <label class="field"><span class="label" id="tx-date-label">${t.paid ? 'Date' : 'Planned date'}</span><input type="date" name="date" value="${esc(t.date)}" required></label>
-        <label class="field paid-toggle"><span class="label" id="tx-paid-label">${t.type === 'income' ? 'Received' : 'Paid'}</span>
-          <span class="switch"><input type="checkbox" name="paid" ${t.paid ? 'checked' : ''}><span class="track"></span></span></label>
-      </div>
-      <div class="field"><span class="label">Category</span>
-        <details class="cat-pick" id="cat-pick">
-          <summary><span id="cat-current"></span>${ic('chevron', 18)}</summary>
-          <div class="cat-grid" id="cat-grid" ${isNew ? 'data-hide-fixed="1"' : ''}>${catGrid(t.type, t.category, isNew)}</div>
-        </details>
-      </div>
+      ${datePaidFields(t)}
+      ${catPickField('Category', t.type, t.category, isNew)}
+      ${projectField(t.type, t.projectId)}
       ${!isNew && !t.paid && !t.recurringId
         ? `<button type="button" class="btn btn-block" data-action="move-next" data-id="${esc(t.id)}">${ic('next', 18)} Move to ${ymLabel(ymAdd(ymOf(t.date), 1))}</button>` : ''}
       <div class="sheet-actions">
-        ${isNew ? '' : `<button type="button" class="btn btn-danger" data-action="delete-tx" data-id="${esc(t.id)}">${ic('trash', 18)} Delete</button>`}
+        ${isNew
+          ? `<button type="button" class="btn" data-action="list-paste">${ic('copy', 18)} Paste list</button>`
+          : `<button type="button" class="btn btn-danger" data-action="delete-tx" data-id="${esc(t.id)}">${ic('trash', 18)} Delete</button>`}
         <button class="btn btn-primary btn-lg">${isNew ? 'Add' : 'Save'}</button>
       </div>
     </form>`);
-  syncCatPick();
-  // Opening the picker: bring the whole grid into view above the Add button.
-  $('#cat-pick')?.addEventListener('toggle', e => {
-    if (e.target.open) e.target.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  });
+  initCatPick();
+}
+
+/* ---------- paste a list: one entry per line, all in one category ---------- */
+
+const NOTE_MAX = 80;
+
+/** Lines of a pasted list, without blanks or list markers ("- x", "• x", "1. x"). A leading "1 pá" is a quantity and stays. */
+const listLines = text => String(text).split(/[\r\n]+/)
+  .map(l => l.replace(/^\s*(?:[-–—•*·]\s+|\d+[.)]\s+)/, '').trim().slice(0, NOTE_MAX))
+  .filter(Boolean);
+
+function listPasteForm() {
+  const project = $('#sheet [name="project"]')?.value || ''; // carried over from the sheet being replaced
+  openSheet('Paste a list', `
+    <form class="form" data-form="list-paste">
+      <input type="hidden" name="project" value="${esc(project)}">
+      <label class="field"><span class="label">One item per line</span>
+        <textarea name="text" rows="8" autofocus autocomplete="off" placeholder="200 blocos de 15&#10;8 sacos de cimento&#10;20 varões 8mm"></textarea></label>
+      <div class="sheet-actions"><button class="btn btn-primary btn-lg">Set prices</button></div>
+    </form>`);
+}
+
+const listRow = (note = '') => `
+        <li class="list-row">
+          <input name="note" value="${esc(note)}" maxlength="${NOTE_MAX}" placeholder="Item" autocomplete="off" enterkeyhint="next" aria-label="Item">
+          <input name="price" inputmode="decimal" placeholder="0" autocomplete="off" enterkeyhint="next" aria-label="Price of ${esc(note || 'item')}">
+          <button type="button" class="icon-btn" data-action="list-remove" aria-label="Remove ${esc(note || 'item')}">${ic('x', 16)}</button>
+          <button type="button" class="list-unit" data-action="list-unit" aria-pressed="false" hidden></button>
+        </li>`;
+
+/** Quantity a line starts with: "200 blocos" → 200, "1,5 kg" → 1.5, "1.000 blocos" → 1000. No number → 1. */
+function lineQty(note) {
+  const m = /^\d+(?:[.,]\d+)*/.exec(String(note).trim());
+  if (!m) return 1;
+  const n = Number(/^\d{1,3}(?:[.,]\d{3})+$/.test(m[0]) ? m[0].replace(/[.,]/g, '') : m[0].replace(',', '.'));
+  return n > 0 ? n : 1;
+}
+
+/** What a row will be saved as: the price typed, times the quantity when "Per unit" is on. */
+function listRowAmount(row) {
+  const price = parseAmount($('[name="price"]', row).value) || 0;
+  return round2(price * (row.classList.contains('unit') ? lineQty($('[name="note"]', row).value) : 1));
+}
+
+function listPriceForm(lines, projectId = '') {
+  const t = { type: 'expense', category: '', date: defaultDate(), paid: false };
+  openSheet('Set prices', `
+    <form class="form" data-form="list">
+      ${typeSeg(t.type)}
+      ${catPickField('Category for all lines', t.type, t.category, true)}
+      ${projectField(t.type, projectId, 'Project for all lines')}
+      ${datePaidFields(t)}
+      <div class="field"><span class="label">Price of each line (${esc(S.data.settings.currency)})</span>
+        <ul class="list-rows">${lines.map(listRow).join('')}</ul>
+        <button type="button" class="link sm list-more" data-action="list-add-row">+ Add line</button>
+      </div>
+      <div class="sheet-actions"><button class="btn btn-primary btn-lg" id="list-add"></button></div>
+    </form>`);
+  initCatPick();
+  updateListTotal();
+}
+
+function updateListTotal() {
+  const rows = $$('#sheet .list-row');
+  for (const row of rows) {
+    const qty = lineQty($('[name="note"]', row).value);
+    const on = row.classList.contains('unit');
+    const btn = $('.list-unit', row);
+    btn.hidden = qty === 1; // nothing to multiply
+    btn.setAttribute('aria-pressed', String(on));
+    btn.textContent = on ? `Per unit × ${qty} = ${fmtNumber(listRowAmount(row))}` : `Per unit? × ${qty}`;
+  }
+  const n = rows.length;
+  $('#list-add').textContent = `Add ${n} ${n === 1 ? 'entry' : 'entries'} · ${money(sum(rows, listRowAmount))}`;
+}
+
+/** Enter walks down the prices, so a whole list can be typed without tapping each box. */
+function listEnter(input) {
+  const row = input.closest('.list-row');
+  const price = $('[name="price"]', row);
+  const next = input === price ? row.nextElementSibling && $('[name="price"]', row.nextElementSibling) : price;
+  if (!next) return input.blur();
+  next.focus({ preventScroll: true });
+  next.scrollIntoView({ block: 'nearest' });
 }
 
 function payForm(p) {
@@ -1904,6 +2163,48 @@ function download(name, content, type) {
 const ACTIONS = {
   go: el => { S.view = el.dataset.view; closeSheet(); render(); window.scrollTo(0, 0); },
   add: () => txForm(),
+  'list-paste': listPasteForm,
+  'new-project': () => projectForm(),
+  'open-project': el => projectSheet(projectOf(el.dataset.id)),
+  'edit-project': el => projectForm(projectOf(el.dataset.id)),
+  'project-add': el => txForm(null, el.dataset.id),
+  'project-archive': el => {
+    const p = projectOf(el.dataset.id);
+    closeSheet();
+    mutate(d => { d.projects.find(x => x.id === p.id).archived = !p.archived; }, p.archived ? `${p.name} reopened` : `${p.name} archived`);
+  },
+  'delete-project': el => {
+    const p = projectOf(el.dataset.id);
+    const n = projectTotals(p.id).list.length;
+    if (!confirm(`Delete the project "${p.name}"?${n ? ` Its ${n} expense${n === 1 ? '' : 's'} stay in your months, without the project.` : ''}\n\nTip: Archive keeps it and hides it from the lists.`)) return;
+    closeSheet();
+    mutate(d => {
+      d.projects = d.projects.filter(x => x.id !== p.id);
+      for (const t of d.transactions) if (t.projectId === p.id) t.projectId = null;
+    }, 'Project deleted');
+  },
+  'sel-project': selProjectSheet,
+  'sel-project-set': el => {
+    const ids = new Set(selTaggable().map(t => t.id));
+    const id = el.dataset.id || null;
+    closeSheet();
+    mutate(d => { for (const t of d.transactions) if (ids.has(t.id)) t.projectId = id; },
+      id ? `${ids.size} added to ${projectOf(id).name}` : `Project removed from ${ids.size}`);
+    selEnd();
+  },
+  'list-add-row': () => {
+    $('#sheet .list-rows').insertAdjacentHTML('beforeend', listRow());
+    $('#sheet .list-row:last-child input').focus();
+    updateListTotal();
+  },
+  'list-unit': el => {
+    el.closest('.list-row').classList.toggle('unit');
+    updateListTotal();
+  },
+  'list-remove': el => {
+    el.closest('.list-row').remove();
+    if ($('#sheet .list-row')) updateListTotal(); else listPasteForm();
+  },
   'prev-month': () => { S.month = ymAdd(S.month, -1); render(); },
   'next-month': () => { S.month = ymAdd(S.month, 1); render(); },
   'this-month': () => { S.month = ymNow(); render(); },
@@ -2107,9 +2408,9 @@ const ACTIONS = {
   'export-json': () => download(`bbcash-backup-${todayISO()}.json`, JSON.stringify(S.data, null, 2), 'application/json'),
   'export-csv': () => {
     const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const rows = [['Date', 'Type', 'Category', 'Description', 'Amount', 'Status', 'Fixed']];
+    const rows = [['Date', 'Type', 'Category', 'Description', 'Amount', 'Status', 'Fixed', 'Project']];
     [...S.data.transactions].sort((a, b) => a.date.localeCompare(b.date)).forEach(t =>
-      rows.push([t.date, t.type, cat(t.category).name, t.note || '', t.type === 'income' ? t.amount : -t.amount, t.paid ? 'paid' : 'planned', t.recurringId ? 'yes' : '']));
+      rows.push([t.date, t.type, cat(t.category).name, t.note || '', t.type === 'income' ? t.amount : -t.amount, t.paid ? 'paid' : 'planned', t.recurringId ? 'yes' : '', projectOf(t.projectId)?.name || '']));
     download(`bbcash-${todayISO()}.csv`, '﻿' + rows.map(r => r.map(q).join(',')).join('\r\n'), 'text/csv');
   },
   'change-password': passwordForm,
@@ -2130,6 +2431,7 @@ const FORMS = {
     const entry = {
       type: fd.get('type'), amount, category: fd.get('category'),
       date: fd.get('date'), note: fd.get('note').trim(), paid: fd.get('paid') === 'on',
+      projectId: fd.get('type') === 'expense' ? fd.get('project') || null : null,
     };
     closeSheet();
     if (id) {
@@ -2138,6 +2440,45 @@ const FORMS = {
       mutate(d => d.transactions.push({ id: uid(), created: Date.now(), recurringId: null, ...entry }), `${entry.type === 'income' ? 'Income' : 'Expense'} added`);
     }
     if (ymOf(entry.date) !== S.month) { S.month = ymOf(entry.date); render(); }
+  },
+
+  'list-paste'(form, fd) {
+    const lines = listLines(fd.get('text'));
+    if (!lines.length) return invalid(form, 'text');
+    listPriceForm(lines, fd.get('project'));
+  },
+
+  project(form, fd) {
+    const id = fd.get('id');
+    const p = { name: fd.get('name').trim(), budget: parseAmount(fd.get('budget')) || 0, color: fd.get('color') };
+    if (!p.name) return invalid(form, 'name');
+    closeSheet();
+    if (id) mutate(d => Object.assign(d.projects.find(x => x.id === id), p), 'Project saved');
+    else mutate(d => d.projects.push({ id: uid(), created: Date.now(), archived: false, ...p }), 'Project created');
+  },
+
+  list(form, fd) {
+    const rows = $$('.list-row', form)
+      .map(el => ({ price: $('[name="price"]', el), note: $('[name="note"]', el).value.trim(), amount: listRowAmount(el) }))
+      .filter(r => r.note || r.price.value.trim());
+    const missing = rows.find(r => !(r.amount > 0));
+    if (missing) {
+      toast('Every line needs a price, or remove the line');
+      missing.price.scrollIntoView({ block: 'nearest' });
+      return shake(missing.price);
+    }
+    if (!rows.length) return;
+    const base = {
+      type: fd.get('type'), category: fd.get('category'), date: fd.get('date'), paid: fd.get('paid') === 'on',
+      projectId: fd.get('type') === 'expense' ? fd.get('project') || null : null,
+    };
+    const entries = rows.map(r => ({ note: r.note, amount: r.amount }));
+    const now = Date.now();
+    closeSheet();
+    // Newest shows first in the list, so count down to keep the pasted order.
+    mutate(d => entries.forEach((e, i) => d.transactions.push({ id: uid(), created: now - i, recurringId: null, ...base, ...e })),
+      `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'} added`);
+    if (ymOf(base.date) !== S.month) { S.month = ymOf(base.date); render(); }
   },
 
   pay(form, fd) {
@@ -2266,7 +2607,10 @@ const FORMS = {
 };
 
 function invalid(form, name) {
-  const el = form.querySelector(`[name="${name}"]`);
+  shake(form.querySelector(`[name="${name}"]`));
+}
+
+function shake(el) {
   el.focus();
   el.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-6px)' }, { transform: 'translateX(6px)' }, { transform: 'translateX(0)' }], { duration: 220 });
 }
@@ -2517,6 +2861,11 @@ document.addEventListener('change', e => {
     const grid = $('#cat-grid', form);
     if (grid) grid.innerHTML = catGrid(el.value, $('input[name="category"]:checked', form)?.value, gridHidesFixed(grid));
     syncCatPick();
+    const projectBox = $('.project-field', form);
+    if (projectBox) {
+      projectBox.hidden = el.value === 'income';
+      if (projectBox.hidden) $('select', projectBox).value = '';
+    }
     $('.amount-field', form)?.classList.remove('expense', 'income');
     $('.amount-field', form)?.classList.add(el.value);
     const paidLabel = $('#tx-paid-label', form);
@@ -2561,6 +2910,7 @@ document.addEventListener('input', e => {
   if (e.target.name === 'amount' && e.target.closest('.amount-field')) {
     e.target.style.width = amountWidth(e.target.value);
   }
+  if (e.target.closest('.list-row')) updateListTotal();
   if (e.target.id === 'tx-search') {
     S.search = e.target.value;
     $('#tx-list').innerHTML = txListInner(S.data.transactions.filter(t => t.paid && ymOf(t.date) === S.month));
@@ -2572,6 +2922,11 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.closest('.inline-cat')) {
     e.preventDefault();
     $('[data-action="inline-cat-save"]', e.target.closest('.inline-cat')).click();
+    return;
+  }
+  if (e.key === 'Enter' && e.target.closest('.list-row')) {
+    e.preventDefault();
+    listEnter(e.target);
     return;
   }
   if (e.key === 'Enter' && e.target.closest('.ov-add')) {
@@ -2763,6 +3118,8 @@ function setSheetDrag(dy) {
 document.addEventListener('touchstart', e => {
   const panel = e.target.closest?.('#sheet .sheet-panel');
   if (!panel || e.touches.length !== 1 || window.matchMedia('(min-width: 640px)').matches) return;
+  // A long pasted list scrolls inside its box: that must not pull the sheet closed.
+  if (e.target.matches('textarea') && e.target.scrollHeight > e.target.clientHeight) return;
   // From the handle/title it always drags; elsewhere only once the form is scrolled to the top.
   const fromHead = !!e.target.closest('.sheet-head') || e.touches[0].clientY - panel.getBoundingClientRect().top < 40;
   if (!fromHead && panel.scrollTop > 0) return;
